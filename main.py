@@ -3,7 +3,7 @@ from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
 
 def main():
-    raw_variants = fetch_clinvar_deletions_entrez(chrom="22", max_results=50)
+    raw_variants = fetch_clinvar_deletions_entrez(chrom="22", max_results=500)
     ##print(f"Raw variants fetched: {len(raw_variants)}")
 
     all_variants = pass_through_variants(raw_variants)
