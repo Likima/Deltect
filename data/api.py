@@ -1,20 +1,51 @@
 import requests
-import json
 
-base_url = "https://clinicaltables.nlm.nih.gov/api/dbvar/v3/search"
+def fetch_clinvar_deletions_entrez(chrom="22", max_results=50):
+    search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    search_params = {
+        "db": "clinvar",
+        "term": f"deletion[variant type] AND {chrom}[chromosome]",
+        "retmax": max_results,
+        "retmode": "json"
+    } ##Gets 50 examples with the query
 
-# Query parameters
-params = {
-    'terms': '',  # Required field
-    'q': 'Type:deletion AND SeqID:NC_000022.10',  # Filter for deletion type variants
-    'df': 'Name,Type,SeqID,FeatureStart,FeatureEnd,clinical_int',  # Display fields
-    'ef': 'Dbxref,phenotype,Zygosity,var_origin',  # Extra fields to return
-    'maxList': 100  # Limit results
-}
+    try:
+        search_resp = requests.get(search_url, params=search_params)
+        search_resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error during search request: {e}")
+        return []
 
-def fetch_dbvar_deletions():
-    response = requests.get(base_url, params=params)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Error: {response.status_code}")
+    search_data = search_resp.json()
+    ids = search_data.get("esearchresult", {}).get("idlist", [])
+
+    if not ids:
+        return []
+
+    summary_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+    summary_params = {
+        "db": "clinvar",
+        "id": ",".join(ids),
+        "retmode": "json"
+    } ##This was to get other fields
+
+    try:
+        s_resp = requests.get(summary_url, params=summary_params)
+        s_resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error during summary request: {e}")
+        return []
+
+    s_data = s_resp.json()
+    summaries = []
+    result_data = s_data.get("result", {})
+
+    for vid in ids:
+        variant = result_data.get(vid)
+        if variant:
+            summaries.append(variant)
+
+    if len(summaries) == 0:
+        print("No usable variant summaries found in API response.")
+
+    return summaries ##Return what was queried
