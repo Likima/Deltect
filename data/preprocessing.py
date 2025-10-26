@@ -1,28 +1,12 @@
-import numpy as np
-import pandas as pd
+def summarize_variants(variants):
+    counts = {}
+    for v in variants:
+        significance = v.get("clinical_significance", "N/A") ##Gets the Classification/Review status
+        if isinstance(significance, list):
+            for item in significance:
+                counts[item] = counts.get(item, 0) + 1
+        else:
+            counts[significance] = counts.get(significance, 0) + 1
 
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-
-def preprocess(data):
-
-    df = pd.DataFrame(data)
-
-    numerical_features = ['feature_start', 'feature_end', 'feature_length']
-    categorical_features = ['clinical_intervention'] # label. do we add this here?
-
-    numerical_transformer = StandardScaler()
-    categorical_transformer = OneHotEncoder(handle_unknown='ignore')
-    # do we need the "not provided"? should probabl drop right"
-
-    preprocessor = ColumnTransformer()
-
-# to delete after
-def load_dataframe(data):
-    # transforms json array to dataframe
-    return pd.DataFrame(data)
-
-
-    
+    for k, v in counts.items():
+        print(f"  - {k}: {v}")
