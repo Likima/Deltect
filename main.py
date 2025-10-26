@@ -1,9 +1,9 @@
-from data.api import fetch_dbvar_deletions
+from data.api import fetch_clinvar_deletions
 from data.data_processor import process_api_data
 from data.preprocessing import load_dataframe
 
 def main():
-    raw_data = fetch_dbvar_deletions()
+    raw_data = fetch_clinvar_deletions()
 
     processed_data = process_api_data(raw_data)
 
