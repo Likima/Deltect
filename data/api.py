@@ -3,6 +3,35 @@ from dotenv import dotenv_values
 env = dotenv_values(".env")
 ENTREZ_API_KEY = env.get("ENTREZ_API_KEY")
 
+ALLOWED_CLINSIG_TERMS = {"pathogenic", "likely pathogenic", "benign", "likely benign"}
+
+def _variant_has_allowed_clinsig(variant):
+    candidates = []
+    for key in ("clinical_significance", "clinicalSignificance", "clinical_significance_description", "clinicalSignificanceDescription"):
+        if key in variant and variant[key] is not None:
+            candidates.append(variant[key])
+
+    if not candidates:
+        candidates.append(variant)
+
+    for cand in candidates:
+        if isinstance(cand, dict):
+            for subk in ("description", "value", "name"):
+                if subk in cand and cand[subk]:
+                    s = str(cand[subk]).lower()
+                    for term in ALLOWED_CLINSIG_TERMS:
+                        if term in s:
+                            return True
+            s = str(cand).lower()
+        else:
+            s = str(cand).lower()
+
+        for term in ALLOWED_CLINSIG_TERMS:
+            if term in s:
+                return True
+
+    return False
+
 def fetch_clinvar_deletions_entrez(chrom="22", max_results=500):
     search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     search_params = {
@@ -50,7 +79,7 @@ def fetch_clinvar_deletions_entrez(chrom="22", max_results=500):
 
         for vid in batch_ids:
             variant = result_data.get(vid)
-            if variant:
+            if variant and _variant_has_allowed_clinsig(variant):
                 summaries.append(variant)
 
     if len(summaries) == 0:

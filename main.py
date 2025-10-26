@@ -20,6 +20,7 @@ def main():
                   f"Location: {v.get('chr', 'N/A')}:{v.get('start', '?')}-{v.get('end', '?')} | "
                   f"Significance: {v.get('clinical_significance', 'N/A')} | "
                   f"Condition: {v.get('condition', 'N/A')}")
+            
     else:
         print("No variants found.")
 
