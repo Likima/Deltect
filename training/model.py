@@ -78,25 +78,19 @@ class DeletionPathogenicityPredictor:
         # Anything ambiguous (both terms / none) is dropped.
 
         #TODO: reach out to bioinformatics people to see what "likely" means numerically
-
         def map_prob(text):
             """Map clinical significance text to a probability score."""
             t = (text or '').lower()
-            
-            # Check for 'likely' phrases first (lower confidence)
-            if re.search(r'likely pathogenic', t):
+            if 'pathogenic' in t and 'likely' in t:
                 return 0.9
-            if re.search(r'likely benign', t):
-                return 0.1
-            
-            # Check for explicit terms (higher confidence)
-            if re.search(r'pathogenic', t) and not re.search(r'benign', t):
+            elif 'pathogenic' in t:
                 return 1.0
-            if re.search(r'benign', t) and not re.search(r'pathogenic', t):
+            elif 'benign' in t and 'likely' in t:
+                return 0.1
+            elif 'benign' in t:
                 return 0.0
-            
-            # Return NaN for ambiguous cases (will be dropped)
-            return np.nan
+            # ambiguous: assign 0.5 instead of dropping
+            return 0.5
 
         # Apply probability mapping to clinical significance column
         df['pathogenic_prob'] = df['clinical_significance'].apply(map_prob)
@@ -115,33 +109,15 @@ class DeletionPathogenicityPredictor:
             raise ValueError("No variants with assignable probabilistic labels found for training")
 
         # Encode features that are strings (gene, consequence, condition) into integers
-        # label encoding
-        for feature in ['gene', 'consequence', 'condition']:
-            # Replace missing values with 'Unknown'
-            df[feature] = df[feature].fillna('Unknown')
-
-            if feature not in self.label_encoders:
-                # First time seeing this feature - create and fit encoder
-                self.label_encoders[feature] = LabelEncoder()
-                df[f'{feature}_encoded'] = self.label_encoders[feature].fit_transform(df[feature])
-            else:
-                # Encoder already exists - handle unseen categories
-                le = self.label_encoders[feature]
-                df[f'{feature}_encoded'] = df[feature].apply(
-                    # below function reads: "check if the category is seen during training. If it has, transform it to an integer, else to -1"
-                    lambda x: le.transform([x])[0] if x in le.classes_ else -1 
-                )
         
-        # what columns are features
-        feature_cols = [
-            'deletion_size',
-            'chr_position',
-            'gene_encoded',
-            'consequence_encoded',
-            'condition_encoded'
-        ]
+        # I CHANGED TO USE ONE-HOT
+        categorical_features = ['gene', 'consequence', 'condition']
+        df[categorical_features] = df[categorical_features].fillna('Unknown')
+        df_encoded = pd.get_dummies(df[categorical_features], prefix=categorical_features, drop_first=False)
+        df = pd.concat([df, df_encoded], axis=1)
 
-        # Extract feature matrix and target vector
+        # Build feature matrix
+        feature_cols = ['deletion_size', 'chr_position'] + list(df_encoded.columns)
         X = df[feature_cols].values.astype(float)
         y = df['pathogenic_prob'].astype(float).values
 
@@ -176,9 +152,9 @@ class DeletionPathogenicityPredictor:
         # TODO: we can play with these hyperparameters and see how it helps us
         self.model = RandomForestRegressor(
             n_estimators=100,  # Number of trees in the forest
-            max_depth=10,  # Maximum depth of each tree 
-            min_samples_split=5,  # Minimum samples required to split a node
-            min_samples_leaf=2,  # Minimum samples required at a leaf node
+            max_depth=8,  # Maximum depth changed from 10 to 
+            min_samples_split=10,  # Minimum samples required to split a node
+            min_samples_leaf=10,  # Minimum samples required at a leaf node #MODIFIED 2->4
             random_state=random_state,
             n_jobs=-1  # idk lol
         )
@@ -288,9 +264,10 @@ class DeletionPathogenicityPredictor:
         print(f"  Train Specificity: {train_metrics['specificity']:.4f}")
     
         # Print feature importance scores
-        print("\nFeature Importance:")
-        for feature, importance in zip(self.feature_names, self.model.feature_importances_):
-            print(f"  {feature}: {importance:.4f}")
+        #print("\nFeature Importance:")
+        #for feature, importance in zip(self.feature_names, self.model.feature_importances_):
+            #print(f"  {feature}: {importance:.4f}")
+
 
         # Return comprehensive results dictionary
         return {
