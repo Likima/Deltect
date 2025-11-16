@@ -2,7 +2,7 @@ from data.api import fetch_clinvar_deletions_entrez
 from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
 from training.model import DeletionPathogenicityPredictor
-from utils.plot import plot_tree
+from utils.plot import plot_tree, visualize_results
 
 def main():
     raw_variants = fetch_clinvar_deletions_entrez(chrom="22", max_results=3000)
@@ -27,7 +27,7 @@ def main():
         print(f"\nHold-out Test Set:")
         print(f"   MSE: {results['mse']:.4f}")
         print("\n Generating the Plots and/or Graphs")
-        # predictor.visualize_results(results)
+        visualize_results(predictor, results)
         print("\n Visulization Task is Complete")
                 
     except ValueError as e:

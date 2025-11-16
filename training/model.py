@@ -4,10 +4,6 @@ from sklearn.model_selection import train_test_split, cross_validate
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import mean_squared_error, precision_score, recall_score
-from sklearn.metrics import roc_curve, auc
-import re
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-import matplotlib.pyplot as plt
 
 class DeletionPathogenicityPredictor:
     """Random Forest regressor that predicts a pathogenicity probability for deletions."""
@@ -313,60 +309,3 @@ class DeletionPathogenicityPredictor:
         # Clip predictions to valid probability range [0, 1]
         return np.clip(preds, 0.0, 1.0)
     
-    #Generates the plots and confusion matrixs
-    #Can still change it to include the visulaization of the chromsome
-    #Just like in the resource posted in the discord chat
-    #This is just a baseline for now
-    def visualize_results(self, results):
-        y_test = results["y_test"]
-        y_pred = results["y_pred"]
-        feature_names = results["feature_names"]
-        threshold = self.threshold
-
-        y_test_binary = (y_test >= threshold).astype(int)
-        y_pred_binary = (y_pred >= threshold).astype(int)
-
-        cm = confusion_matrix(y_test_binary,y_pred_binary)
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels= ["Begnin", "Pathogenic"])
-        plt.figure(figsize=(5,5))
-        disp.plot(cmp="Blues", colorbar = False)
-        plt.title("Confusion Matrix")
-        plt.show()
-
-        plt.figure(figsize=(6,5))
-        plt.scatter(y_test,y_pred, alpha = 0.6)
-        plt.xlabel("Actual Pathogenic Probability")
-        plt.ylabel("Prediciated Pathogenic Propbability")
-        plt.title("Predicated vs Actual")
-        plt.grid(True)
-        plt.show()
-
-        residuals = y_test - y_pred
-        plt.figure(figsize=(6,5))
-        plt.scatter(y_pred, residuals, alpha = 0.6)
-        plt.axhline(0, color="red")
-        plt.xlabel("Predicated")
-        plt.ylabel("Residual")
-        plt.title("Residual Plot")
-        plt.grid(True)
-        plt.show()
-
-        plt.figure(figsize = (6,4))
-        plt.hist(y_pred, bins = 20)
-        plt.xlabel("Predicated Probability")
-        plt.ylabel("Count")
-        plt.title("Distribution of Predicated Probabilities")
-        plt.grid(True)
-        plt.show()
-
-         #The ROC Curve 
-        fpr, tpr = roc_curve(y_test, y_pred)
-        roc_auc = auc(fpr, tpr)
-        plt.figure(figsize=(6,5))
-        plt.plot(fpr,tpr,label = f"AUC = {roc_auc: .3f}")
-        plt.plot([0,1], [0,1], linestyle = "--", color = "grey")
-        plt.xlabel("False Positive Rate")
-        plt.ylabel("True Positive Rate")
-        plt.title("ROC Curve")
-        plt.grid(True)
-        plt.show()
