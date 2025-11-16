@@ -54,9 +54,11 @@ def main():
         print(f"Saved raw variants to {output_dir / 'raw_variants.json'}")
     
     # Step 2: Process variants
+    # Step 2: Process variants
     print("\n[2/5] Processing and normalizing variants...")
     
-    processed_variants = pass_through_variants(raw_variants)
+    # Pass reference genome to extract sequences
+    processed_variants = pass_through_variants(raw_variants, reference_fasta=REFERENCE_FASTA)
     
     print(f"Processed {len(processed_variants)} variants")
     

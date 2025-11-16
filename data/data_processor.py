@@ -1,8 +1,10 @@
-from asyncio.log import logger
+import logging
 from typing import Optional
 
 import pysam
 from data.ref_genome_data import _HAS_PYSAM
+
+logger = logging.getLogger(__name__)
 
 
 def pass_through_variants(variants, reference_fasta: Optional[str] = None):
