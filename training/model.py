@@ -4,7 +4,6 @@ from sklearn.model_selection import train_test_split, cross_validate
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import mean_squared_error, precision_score, recall_score
-import re
 
 class DeletionPathogenicityPredictor:
     """Random Forest regressor that predicts a pathogenicity probability for deletions."""
@@ -21,6 +20,8 @@ class DeletionPathogenicityPredictor:
         self.scaler = StandardScaler()  # Scaler for numerical features
         self.feature_names = []  # List of feature column names
         self.threshold = threshold  # Threshold for binary classification
+        self.X = None # to be initialized
+        self.y = None
 
     def _calculate_metrics(self, y_true, y_pred_proba, threshold=None):
         """Calculate precision, recall, and specificity from probabilities."""
@@ -222,11 +223,11 @@ class DeletionPathogenicityPredictor:
         print(f"  Train Specificity: {np.mean(cv_specificity_train):.4f}")
 
         # Individual fold results 
-        print(f"\n  Individual Fold Results:")
-        for i in range(cv_folds):
-            print(f"    Fold {i+1}: MSE={cv_mse_test[i]:.4f}, "
-                  f"Precision={cv_precision_test[i]:.4f}, Recall={cv_recall_test[i]:.4f}, "
-                  f"Specificity={cv_specificity_test[i]:.4f}")
+        # print(f"\n  Individual Fold Results:")
+        # for i in range(cv_folds):
+        #     print(f"    Fold {i+1}: MSE={cv_mse_test[i]:.4f}, "
+        #           f"Precision={cv_precision_test[i]:.4f}, Recall={cv_recall_test[i]:.4f}, "
+        #           f"Specificity={cv_specificity_test[i]:.4f}")
 
         # Train final model on entire training set
         print(f"\nTraining final model on entire training set")
@@ -249,19 +250,19 @@ class DeletionPathogenicityPredictor:
         mse = mean_squared_error(y_test, y_pred)
         test_metrics = self._calculate_metrics(y_test, y_pred)
 
-        print(f"  Test MSE:         {mse:.4f}")
-        print(f"  Test Precision:   {test_metrics['precision']:.4f}")
-        print(f"  Test Recall:      {test_metrics['recall']:.4f}")
-        print(f"  Test Specificity: {test_metrics['specificity']:.4f}")
+        # print(f"  Test MSE:         {mse:.4f}")
+        # print(f"  Test Precision:   {test_metrics['precision']:.4f}")
+        # print(f"  Test Recall:      {test_metrics['recall']:.4f}")
+        # print(f"  Test Specificity: {test_metrics['specificity']:.4f}")
 
         # Calculate training set metrics to check for overfitting
         train_mse = mean_squared_error(y_train, train_pred)
         train_metrics = self._calculate_metrics(y_train, train_pred)
         
-        print(f"\n  Train MSE:         {train_mse:.4f}")
-        print(f"  Train Precision:   {train_metrics['precision']:.4f}")
-        print(f"  Train Recall:      {train_metrics['recall']:.4f}")
-        print(f"  Train Specificity: {train_metrics['specificity']:.4f}")
+        # print(f"\n  Train MSE:         {train_mse:.4f}")
+        # print(f"  Train Precision:   {train_metrics['precision']:.4f}")
+        # print(f"  Train Recall:      {train_metrics['recall']:.4f}")
+        # print(f"  Train Specificity: {train_metrics['specificity']:.4f}")
     
         # Print feature importance scores
         #print("\nFeature Importance:")
@@ -307,3 +308,4 @@ class DeletionPathogenicityPredictor:
         
         # Clip predictions to valid probability range [0, 1]
         return np.clip(preds, 0.0, 1.0)
+    
