@@ -114,6 +114,8 @@ class ClinVarClient:
         search_term = (
             f'"{chr}"[Chromosome] '
             f'AND "deletion"[Type of variation]'
+            f'AND "(criteria provided, multiple submitters, no conflicts"[Review status]'
+            f'OR "criteria provided, single submitter"[Review status])'
         )
         
         logger.info(f"Searching dbVar: {search_term}")

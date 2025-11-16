@@ -150,35 +150,53 @@ def main():
         
         # Save model results
         if SAVE_OUTPUTS:
+            # Calculate dataset statistics
+            all_data = processed_variants + normal_sequences
+            pathogenic_count = sum(1 for v in all_data if v.get('is_pathogenic', False))
+            benign_count = len(all_data) - pathogenic_count
+            
+            # Get train/test split pathogenicity distribution
+            train_pathogenic = sum(1 for pred in results['y_train_pred'] if pred >= predictor.threshold)
+            test_pathogenic = sum(1 for y in results['y_test'] if y >= predictor.threshold)
+            
             results_summary = {
-                'configuration': {
-                    'chromosome': CHROMOSOME,
-                    'max_variants': MAX_VARIANTS,
-                    'test_size': TEST_SIZE,
-                    'cv_folds': CV_FOLDS,
-                    'threshold': predictor.threshold
-                },
-                'cross_validation': {
-                    'mse_mean': float(results['cv_mse_mean']),
-                    'mse_std': float(results['cv_mse_std']),
-                    'precision_mean': float(results['cv_precision_mean']),
-                    'precision_std': float(results['cv_precision_std']),
-                    'recall_mean': float(results['cv_recall_mean']),
-                    'recall_std': float(results['cv_recall_std']),
-                    'specificity_mean': float(results['cv_specificity_mean']),
-                    'specificity_std': float(results['cv_specificity_std'])
-                },
-                'test_set': {
-                    'mse': float(results['mse']),
-                    'precision': float(results['precision']),
-                    'recall': float(results['recall']),
-                    'specificity': float(results['specificity'])
-                },
-                'dataset_info': {
-                    'total_variants': len(processed_variants),
-                    'training_samples': len(results['y_train_pred']),
-                    'test_samples': len(results['y_test'])
-                }
+            'configuration': {
+                'chromosome': CHROMOSOME,
+                'max_variants': MAX_VARIANTS,
+                'test_size': TEST_SIZE,
+                'cv_folds': CV_FOLDS,
+                'threshold': predictor.threshold
+            },
+            'cross_validation': {
+                'mse_mean': float(results['cv_mse_mean']),
+                'mse_std': float(results['cv_mse_std']),
+                'precision_mean': float(results['cv_precision_mean']),
+                'precision_std': float(results['cv_precision_std']),
+                'recall_mean': float(results['cv_recall_mean']),
+                'recall_std': float(results['cv_recall_std']),
+                'specificity_mean': float(results['cv_specificity_mean']),
+                'specificity_std': float(results['cv_specificity_std'])
+            },
+            'test_set': {
+                'mse': float(results['mse']),
+                'precision': float(results['precision']),
+                'recall': float(results['recall']),
+                'specificity': float(results['specificity'])
+            },
+            'dataset_info': {
+                'total_variants': len(processed_variants),
+                'total_normal_sequences': len(normal_sequences),
+                'total_samples': len(all_data),
+                'pathogenic_count': pathogenic_count,
+                'benign_count': benign_count,
+                'pathogenic_ratio': pathogenic_count / len(all_data) if all_data else 0,
+                'training_samples': len(results['y_train_pred']),
+                'training_pathogenic': train_pathogenic,
+                'training_benign': len(results['y_train_pred']) - train_pathogenic,
+                'test_samples': len(results['y_test']),
+                'test_pathogenic': test_pathogenic,
+                'test_benign': len(results['y_test']) - test_pathogenic
+            }
             }
             
             with open(output_dir / "model_results.json", "w") as f:
