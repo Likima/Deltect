@@ -24,6 +24,9 @@ def main():
         print(f"   Specificity:  {results['specificity']:.4f}")
         print(f"\nHold-out Test Set:")
         print(f"   MSE: {results['mse']:.4f}")
+        print("\n Generating the Plots and/or Graphs")
+        predictor.visualize_results(results)
+        print("\n Visulization Task is Complete")
                 
     except ValueError as e:
         print(f"\nError: {e}")
