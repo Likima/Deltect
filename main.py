@@ -125,7 +125,7 @@ def main():
     try:
         # Train with cross-validation
         results = predictor.train(
-            processed_variants, 
+            processed_variants + normal_sequences, 
             test_size=TEST_SIZE, 
             cv_folds=CV_FOLDS
         )
