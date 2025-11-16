@@ -21,6 +21,8 @@ class DeletionPathogenicityPredictor:
         self.scaler = StandardScaler()  # Scaler for numerical features
         self.feature_names = []  # List of feature column names
         self.threshold = threshold  # Threshold for binary classification
+        self.X = None # to be initialized
+        self.y = None
 
     def _calculate_metrics(self, y_true, y_pred_proba, threshold=None):
         """Calculate precision, recall, and specificity from probabilities."""
