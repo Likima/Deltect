@@ -152,7 +152,7 @@ def main():
         if SAVE_OUTPUTS:
             # Calculate dataset statistics
             all_data = processed_variants + normal_sequences
-            pathogenic_count = sum(1 for v in all_data if v.get('is_pathogenic', False))
+            pathogenic_count = sum(1 for v in all_data if "pathogenic" in v["clinical_significance"].lower())
             benign_count = len(all_data) - pathogenic_count
             
             # Get train/test split pathogenicity distribution
