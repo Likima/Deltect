@@ -16,6 +16,7 @@ def main():
     try:
         # Train with 10-fold cross-validation
         results = predictor.train(all_variants, test_size=0.2, cv_folds=10)
+        plot_tree(predictor, "tree.html")
         
         print("MODEL TRAINING COMPLETE!")
         print(f"\nCross-Validation Results ({results['cv_folds']}-fold):")
@@ -26,7 +27,7 @@ def main():
         print(f"\nHold-out Test Set:")
         print(f"   MSE: {results['mse']:.4f}")
         print("\n Generating the Plots and/or Graphs")
-        predictor.visualize_results(results)
+        # predictor.visualize_results(results)
         print("\n Visulization Task is Complete")
                 
     except ValueError as e:
