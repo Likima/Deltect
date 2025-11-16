@@ -209,5 +209,5 @@ __marimo__/
 *.fa
 *.fai
 
-*.json
+output/*.json
 
