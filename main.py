@@ -16,15 +16,18 @@ def main():
     try:
         # Train with 10-fold cross-validation
         results = predictor.train(all_variants, test_size=0.2, cv_folds=10)
-        plot_tree(predictor)
-        # print("MODEL TRAINING COMPLETE!")
-        # print(f"\nCross-Validation Results ({results['cv_folds']}-fold):")
-        # print(f"   MSE: {results['cv_mse_mean']:.4f}")
-        # print(f"   Precision:  {results['precision']:.4f}")
-        # print(f"   Recall:  {results['recall']:.4f}")
-        # print(f"   Specificity:  {results['specificity']:.4f}")
-        # print(f"\nHold-out Test Set:")
-        # print(f"   MSE: {results['mse']:.4f}")
+        
+        print("MODEL TRAINING COMPLETE!")
+        print(f"\nCross-Validation Results ({results['cv_folds']}-fold):")
+        print(f"   MSE: {results['cv_mse_mean']:.4f}")
+        print(f"   Precision:  {results['precision']:.4f}")
+        print(f"   Recall:  {results['recall']:.4f}")
+        print(f"   Specificity:  {results['specificity']:.4f}")
+        print(f"\nHold-out Test Set:")
+        print(f"   MSE: {results['mse']:.4f}")
+        print("\n Generating the Plots and/or Graphs")
+        predictor.visualize_results(results)
+        print("\n Visulization Task is Complete")
                 
     except ValueError as e:
         print(f"\nError: {e}")
