@@ -1,88 +1,203 @@
-import requests
+"""
+Optimized API client with batch fetching for faster data retrieval.
+"""
+import time
+from typing import List, Dict, Optional
+from Bio import Entrez
 from dotenv import dotenv_values
-env = dotenv_values(".env")
-ENTREZ_API_KEY = env.get("ENTREZ_API_KEY")
+import logging
 
-ALLOWED_CLINSIG_TERMS = {"pathogenic", "likely pathogenic", "benign", "likely benign"}
+logger = logging.getLogger(__name__)
 
-def _variant_has_allowed_clinsig(variant):
-    candidates = []
-    for key in ("clinical_significance", "clinicalSignificance", "clinical_significance_description", "clinicalSignificanceDescription"):
-        if key in variant and variant[key] is not None:
-            candidates.append(variant[key])
 
-    if not candidates:
-        candidates.append(variant)
-
-    for cand in candidates:
-        if isinstance(cand, dict):
-            for subk in ("description", "value", "name"):
-                if subk in cand and cand[subk]:
-                    s = str(cand[subk]).lower()
-                    for term in ALLOWED_CLINSIG_TERMS:
-                        if term in s:
-                            return True
-            s = str(cand).lower()
-        else:
-            s = str(cand).lower()
-
-        for term in ALLOWED_CLINSIG_TERMS:
-            if term in s:
-                return True
-
-    return False
-
-def fetch_clinvar_deletions_entrez(chrom="22", max_results=500):
-    search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-    search_params = {
-        "db": "clinvar",
-        "term": f"deletion[variant type] AND {chrom}[chromosome]",
-        "retmax": max_results,
-        "retmode": "json"
-    }
-
-    try:
-        search_resp = requests.get(search_url, params=search_params)
-        search_resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Error during search request: {e}")
-        return []
-
-    search_data = search_resp.json()
-    ids = search_data.get("esearchresult", {}).get("idlist", [])
-
-    if not ids:
-        return []
-
-    batch_size = 50
-    summaries = []
+class ClinVarClient:
+    """Client for fetching variants from NCBI dbVar database."""
     
-    for i in range(0, len(ids), batch_size):
-        batch_ids = ids[i:i + batch_size]
-        summary_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
-        summary_params = {
-            "db": "clinvar",
-            "id": ",".join(batch_ids),
-            "retmode": "json",
-            "api_key": ENTREZ_API_KEY
-        }
-
+    # Rate limiting
+    MAX_REQUESTS_PER_SECOND = 3
+    RETRY_ATTEMPTS = 3
+    RETRY_DELAY = 2
+    
+    # Batch size for fetching (Entrez allows up to 500 per request)
+    BATCH_SIZE = 200  # Conservative batch size for stability
+    
+    def __init__(self, env_file: str = ".env"):
+        """Initialize dbVar client."""
+        env = dotenv_values(env_file)
+        self.api_key = env.get("ENTREZ_API_KEY")
+        self.email = env.get("ENTREZ_EMAIL")
+        
+        if not self.email:
+            raise ValueError("ENTREZ_EMAIL must be set in .env file")
+        
+        Entrez.api_key = self.api_key
+        Entrez.email = self.email
+        self._last_request_time = 0
+        
+        logger.info(f"Initialized DbVarClient with email: {self.email}")
+    
+    def _rate_limit(self):
+        """Implement rate limiting for API requests."""
+        elapsed = time.time() - self._last_request_time
+        min_interval = 1.0 / self.MAX_REQUESTS_PER_SECOND
+        
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        
+        self._last_request_time = time.time()
+    
+    def _fetch_variants_batch(self, variant_ids: List[str]) -> List[Dict]:
+        """Fetch multiple variants in a single API call.
+        
+        Args:
+            variant_ids: List of variant IDs to fetch
+            
+        Returns:
+            List of variant dictionaries
+        """
+        if not variant_ids:
+            return []
+        
+        self._rate_limit()
+        
+        # Join IDs with commas for batch request
+        id_string = ",".join(variant_ids)
+        
+        for attempt in range(self.RETRY_ATTEMPTS):
+            try:
+                with Entrez.esummary(db="clinVar", id=id_string, rettype="xml") as stream:
+                    # Entrez.read returns a list when fetching multiple IDs
+                    results = Entrez.read(stream, validate=False, ignore_errors=True)
+                
+                # Results may be a list or a single dict
+                if isinstance(results, list):
+                    return results
+                elif isinstance(results, dict):
+                    # Check if it's a DocumentSummarySet
+                    if 'DocumentSummarySet' in results:
+                        doc_set = results['DocumentSummarySet']
+                        if 'DocumentSummary' in doc_set:
+                            return doc_set['DocumentSummary']
+                    return [results]
+                else:
+                    logger.warning(f"Unexpected result type: {type(results)}")
+                    return []
+                    
+            except Exception as e:
+                if attempt < self.RETRY_ATTEMPTS - 1:
+                    logger.warning(
+                        f"Batch fetch retry {attempt + 1}/{self.RETRY_ATTEMPTS}: {e}"
+                    )
+                    time.sleep(self.RETRY_DELAY * (attempt + 1))  # Exponential backoff
+                else:
+                    logger.error(f"Failed to fetch batch after {self.RETRY_ATTEMPTS} attempts: {e}")
+                    return []
+        
+        return []
+    
+    def fetch_deletion_variants(
+        self,
+        chr: str = "22",
+        max_results: int = 500
+) -> List[Dict]:
+        """Fetch all short tandem repeat variants from dbVar using batch requests.
+        
+        Args:
+            max_results: Maximum number of results to fetch
+            min_size: Minimum variant size in bp
+            max_size: Maximum variant size in bp
+            
+        Returns:
+            List of variant dictionaries
+        """
+        # Build search query
+        search_term = (
+            f'"{chr}"[Chromosome] '
+            f'AND "deletion"[Type of variation]'
+        )
+        
+        logger.info(f"Searching dbVar: {search_term}")
+        logger.info(f"Fetching up to {max_results} variants...")
+        
+        # Search for variant IDs
+        self._rate_limit()
         try:
-            s_resp = requests.get(summary_url, params=summary_params)
-            s_resp.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            print(f"Error during summary request for batch {i//batch_size + 1}: {e}")
-            continue
+            with Entrez.esearch(db="clinVar", term=search_term, retmax=max_results) as stream:
+                record = Entrez.read(stream, validate=False, ignore_errors=True)
+        except Exception as e:
+            logger.error(f"Error searching dbVar: {e}")
+            raise
+        
+        variant_ids = record.get("IdList", [])
+        
+        if not variant_ids:
+            logger.warning("No variants found matching search criteria")
+            return []
+        
+        logger.info(f"Found {len(variant_ids)} variant IDs")
+        logger.info(f"Fetching in batches of {self.BATCH_SIZE}...")
+        
+        # Fetch variants in batches
+        all_variants = []
+        total_ids = len(variant_ids)
+        
+        for i in range(0, total_ids, self.BATCH_SIZE):
+            batch_ids = variant_ids[i:i + self.BATCH_SIZE]
+            batch_num = (i // self.BATCH_SIZE) + 1
+            total_batches = (total_ids + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+            
+            logger.info(
+                f"Fetching batch {batch_num}/{total_batches} "
+                f"({len(batch_ids)} variants, {i+len(batch_ids)}/{total_ids} total)"
+            )
+            
+            batch_results = self._fetch_variants_batch(batch_ids)
+            
+            if batch_results:
+                all_variants.extend(batch_results)
+                logger.info(f"Batch {batch_num} successful ({len(batch_results)} variants)")
+            else:
+                logger.warning(f"Batch {batch_num} returned no results")
+        
+        logger.info(f"Successfully fetched {len(all_variants)}/{total_ids} variants")
+        
+        return all_variants
+    
+    def get_variant_stats(self, variants: List[Dict]) -> Dict:
+        """Get statistics about fetched variants."""
+        if not variants:
+            return {"total": 0}
+        
+        stats = {
+            "total": len(variants),
+            "has_gene": sum(1 for v in variants if v.get("dbvargenelist")),
+            "has_placement": sum(1 for v in variants if v.get("dbvarplacementlist")),
+            "has_clinsig": sum(1 for v in variants if v.get("dbvarclinicalsignificancelist")),
+        }
+        
+        variant_types = {}
+        for v in variants:
+            vtype = v.get("variant_type", "unknown")
+            variant_types[vtype] = variant_types.get(vtype, 0) + 1
+        
+        stats["variant_types"] = variant_types
+        
+        return stats
 
-        s_data = s_resp.json()
-        result_data = s_data.get("result", {})
 
-        for vid in batch_ids:
-            variant = result_data.get(vid)
-            if variant and _variant_has_allowed_clinsig(variant):
-                summaries.append(variant)
-
-    if len(summaries) == 0:
-        print("No usable variant summaries found in API response.")
-
-    return summaries
+def fetch_clinvar_deletions_entrez(chrom, max_results=500):
+    """Legacy function for backward compatibility."""
+    client = ClinVarClient()
+    variants = client.fetch_deletion_variants(chrom, max_results=max_results)
+    
+    stats = client.get_variant_stats(variants)
+    logger.info(f"\nVariant Statistics:")
+    logger.info(f"  Total variants: {stats['total']}")
+    logger.info(f"  With gene info: {stats['has_gene']}")
+    logger.info(f"  With placement: {stats['has_placement']}")
+    logger.info(f"  With clinical significance: {stats['has_clinsig']}")
+    
+    if stats.get('variant_types'):
+        logger.info(f"  Variant types: {stats['variant_types']}")
+    
+    return variants
