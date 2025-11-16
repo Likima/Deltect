@@ -1,25 +1,17 @@
-"""
-Process and normalize dbVar variants, extracting sequences from reference genome.
-"""
-from typing import List, Dict, Optional
-import logging
+from asyncio.log import logger
+from typing import Optional
 
-try:
-    import pysam
-    _HAS_PYSAM = True
-except ImportError:
-    _HAS_PYSAM = False
-
-logger = logging.getLogger(__name__)
+import pysam
+from data.ref_genome_data import _HAS_PYSAM
 
 
 def pass_through_variants(variants, reference_fasta: Optional[str] = None):
     """
-    Normalize dbVar variants into a flat record per variant.
+    Normalize ClinVar variants into a flat record per variant.
     Optionally extract sequences from reference genome.
     
     Args:
-        variants: List of raw variant dictionaries from dbVar
+        variants: List of raw variant dictionaries from ClinVar
         reference_fasta: Path to reference genome FASTA (optional)
         
     Returns:
@@ -47,66 +39,91 @@ def pass_through_variants(variants, reference_fasta: Optional[str] = None):
         if not isinstance(v, dict):
             continue
         
-        # Extract UID
-        uid = v.get("uid") or v.get("Id") or v.get("SV") or "N/A"
+        # Extract UID - ClinVar uses accession
+        uid = v.get("accession") or v.get("accession_version") or "N/A"
         
         # Extract title
-        title = v.get("title") or v.get("Title") or "N/A"
+        title = v.get("title") or "N/A"
         
-        # Extract gene
+        # Extract gene from genes array
         gene = "N/A"
-        gene_list = v.get("dbvargenelist") or v.get("dbVarGeneList") or []
-        if isinstance(gene_list, list) and gene_list:
-            first_gene = gene_list[0]
+        genes = v.get("genes") or []
+        if isinstance(genes, list) and genes:
+            first_gene = genes[0]
             if isinstance(first_gene, dict):
-                gene = first_gene.get("name") or first_gene.get("Name") or "N/A"
+                gene = first_gene.get("symbol") or first_gene.get("GeneID") or "N/A"
             elif isinstance(first_gene, str):
                 gene = first_gene
+        elif isinstance(genes, dict):
+            gene = genes.get("symbol") or genes.get("GeneID") or "N/A"
         
-        # Extract genomic coordinates
+        # Extract genomic coordinates from variation_set
         chr_ = "N/A"
         start = "?"
         end = "?"
         assembly = "N/A"
         
-        placements = v.get("dbvarplacementlist") or v.get("dbVarPlacementList") or []
-        if isinstance(placements, dict):
-            placements = [placements]
-        
-        if placements:
-            # Sort by assembly preference (GRCh37 first since that's what we have)
-            def rank_assembly(p):
-                asm = str(p.get("Assembly") or p.get("assembly") or "").upper()
-                if "GRCH37" in asm or "HG19" in asm:
-                    return 0
-                if "GRCH38" in asm or "HG38" in asm:
-                    return 1
-                return 2
+        variation_set = v.get("variation_set") or []
+        if isinstance(variation_set, list) and variation_set:
+            first_variation = variation_set[0]
+            variation_loc = first_variation.get("variation_loc") or []
             
-            best_placement = sorted(placements, key=rank_assembly)[0]
-            chr_ = str(best_placement.get("Chr") or best_placement.get("chr") or "N/A")
-            
-            start_val = (best_placement.get("Chr_start") or 
-                        best_placement.get("chr_start") or 
-                        best_placement.get("start"))
-            end_val = (best_placement.get("Chr_end") or 
-                      best_placement.get("chr_end") or 
-                      best_placement.get("end"))
-            
-            start = str(start_val) if start_val is not None else "?"
-            end = str(end_val) if end_val is not None else "?"
-            assembly = str(best_placement.get("Assembly") or best_placement.get("assembly") or "N/A")
+            if variation_loc:
+                # Sort by assembly preference (GRCh37 first since that's what we have)
+                def rank_assembly(loc):
+                    asm = str(loc.get("assembly_name") or "").upper()
+                    if "GRCH37" in asm or "HG19" in asm:
+                        return 0
+                    if "GRCH38" in asm or "HG38" in asm:
+                        return 1
+                    return 2
+                
+                best_location = sorted(variation_loc, key=rank_assembly)[0]
+                chr_ = str(best_location.get("chr") or "N/A")
+                
+                start_val = best_location.get("start")
+                end_val = best_location.get("stop")
+                
+                start = str(start_val) if start_val is not None else "?"
+                end = str(end_val) if end_val is not None else "?"
+                assembly = str(best_location.get("assembly_name") or "N/A")
         
-        # Extract clinical significance
-        clin_sig = v.get("dbvarclinicalsignificancelist") or v.get("dbVarClinicalSignificanceList")
-        if clin_sig in (None, [], {}):
-            clinical_significance = "N/A"
-        else:
-            clinical_significance = str(clin_sig)
+        # Extract clinical significance from germline_classification
+        clinical_significance = "N/A"
+        germline_class = v.get("germline_classification") or {}
+        if isinstance(germline_class, dict):
+            clinical_significance = germline_class.get("description") or "N/A"
         
-        # Extract variant type
-        var_type_list = v.get("dbvarvarianttypelist") or v.get("dbVarVariantTypeList") or []
-        variant_type = var_type_list[0] if isinstance(var_type_list, list) and var_type_list else "N/A"
+        # Extract variant type from variation_set
+        variant_type = "N/A"
+        if isinstance(variation_set, list) and variation_set:
+            first_variation = variation_set[0]
+            variant_type = first_variation.get("variant_type") or "N/A"
+        
+        # Extract review status from germline_classification
+        review_status = "N/A"
+        if isinstance(germline_class, dict):
+            review_status = germline_class.get("review_status") or "N/A"
+        
+        # Extract condition from trait_set
+        condition = "N/A"
+        trait_set = germline_class.get("trait_set") or [] if isinstance(germline_class, dict) else []
+        if isinstance(trait_set, list) and trait_set:
+            first_trait = trait_set[0]
+            if isinstance(first_trait, dict):
+                condition = first_trait.get("trait_name") or "N/A"
+            elif isinstance(first_trait, str):
+                condition = first_trait
+        elif isinstance(trait_set, dict):
+            condition = trait_set.get("trait_name") or "N/A"
+        
+        # Extract consequence from molecular_consequence_list
+        consequence = "N/A"
+        molecular_consequences = v.get("molecular_consequence_list") or []
+        if isinstance(molecular_consequences, list) and molecular_consequences:
+            consequence = molecular_consequences[0]
+        elif isinstance(molecular_consequences, str):
+            consequence = molecular_consequences
         
         # Extract sequence from reference genome if available
         sequence = None
@@ -141,9 +158,9 @@ def pass_through_variants(variants, reference_fasta: Optional[str] = None):
             "assembly": assembly,
             "variant_type": variant_type,
             "clinical_significance": clinical_significance,
-            "review_status": v.get("review_status", "N/A"),
-            "condition": v.get("condition", "N/A"),
-            "consequence": v.get("consequence", "N/A")
+            "review_status": review_status,
+            "condition": condition,
+            "consequence": consequence
         }
         
         # Add sequence if extracted
@@ -158,4 +175,3 @@ def pass_through_variants(variants, reference_fasta: Optional[str] = None):
         fasta.close()
     
     return processed
-

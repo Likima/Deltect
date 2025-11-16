@@ -65,9 +65,9 @@ class ClinVarClient:
         
         for attempt in range(self.RETRY_ATTEMPTS):
             try:
-                with Entrez.esummary(db="dbVar", id=id_string, rettype="xml") as stream:
+                with Entrez.esummary(db="clinVar", id=id_string, rettype="xml") as stream:
                     # Entrez.read returns a list when fetching multiple IDs
-                    results = Entrez.read(stream, ignore_errors=True)
+                    results = Entrez.read(stream, validate=False, ignore_errors=True)
                 
                 # Results may be a list or a single dict
                 if isinstance(results, list):
@@ -113,7 +113,7 @@ class ClinVarClient:
         # Build search query
         search_term = (
             f'"{chr}"[Chromosome] '
-            f'AND "deletion"[Variant Type]'
+            f'AND "deletion"[Type of variation]'
         )
         
         logger.info(f"Searching dbVar: {search_term}")
@@ -122,8 +122,8 @@ class ClinVarClient:
         # Search for variant IDs
         self._rate_limit()
         try:
-            with Entrez.esearch(db="dbVar", term=search_term, retmax=max_results) as stream:
-                record = Entrez.read(stream, ignore_errors=True)
+            with Entrez.esearch(db="clinVar", term=search_term, retmax=max_results) as stream:
+                record = Entrez.read(stream, validate=False, ignore_errors=True)
         except Exception as e:
             logger.error(f"Error searching dbVar: {e}")
             raise

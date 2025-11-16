@@ -114,7 +114,8 @@ class ReferenceGenomeSampler:
             attempts += 1
             
             # Random chromosome
-            chrom = random.choice(chrom_list)
+            # chrom = random.choice(chrom_list)
+            chrom = '22'
             chrom_info = self.chromosome_lengths[chrom]
             chrom_length = chrom_info['length']
             fasta_name = chrom_info['fasta_name']
@@ -236,7 +237,9 @@ class ReferenceGenomeSampler:
             target_length = random.choice(str_lengths)
             
             # Random chromosome
-            chrom = random.choice(chrom_list)
+            # chrom = random.choice(chrom_list)
+            
+            chrom = '22'
             chrom_info = self.chromosome_lengths[chrom]
             chrom_length = chrom_info['length']
             fasta_name = chrom_info['fasta_name']

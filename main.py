@@ -5,6 +5,7 @@ and training a deletion pathogenicity prediction model.
 from data.api import fetch_clinvar_deletions_entrez
 from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
+from data.ref_genome_data import ReferenceGenomeSampler
 from training.model import DeletionPathogenicityPredictor
 import json
 import logging
@@ -27,6 +28,8 @@ def main():
     TEST_SIZE = 0.2
     CV_FOLDS = 10
     SAVE_OUTPUTS = True
+    BUILD_BALANCED_DATASET = True
+    REFERENCE_FASTA = "hs37d5.fa"
     
     # Step 1: Fetch deletion variants from ClinVar
     print(f"\n[1/5] Fetching deletion variants from ClinVar...")
@@ -68,6 +71,47 @@ def main():
     print("-" * 70)
     summarize_variants(processed_variants)
     print("-" * 70)
+
+    # Step 4: Sample normal reference sequences
+    normal_sequences = []
+    
+    if BUILD_BALANCED_DATASET:
+        print(f"\n[4/5] Sampling normal reference sequences...")
+        print(f"Reference genome: {REFERENCE_FASTA}")
+        
+        try:
+            if not Path(REFERENCE_FASTA).exists():
+                print(f"WARNING: Reference genome not found: {REFERENCE_FASTA}")
+                print("Skipping reference genome sampling.")
+            else:
+                # Initialize reference sampler
+                sampler = ReferenceGenomeSampler(
+                    reference_fasta=REFERENCE_FASTA,
+                    chromosomes=None
+                )
+                
+                # Match STR distribution
+                num_normal_samples = len(processed_variants)
+                print(f"Sampling {num_normal_samples} normal sequences to match STR distribution...")
+                
+                normal_sequences = sampler.match_str_distribution(
+                    str_variants=processed_variants,
+                    ratio=1.0
+                )
+                
+                print(f"Sampled {len(normal_sequences)} normal reference sequences")
+                
+                # Save normal sequences
+                with open(output_dir / "normal_sequences.json", "w") as f:
+                    json.dump(normal_sequences, f, indent=2)
+                print(f"Saved normal sequences to {output_dir / 'normal_sequences.json'}")
+                
+        except Exception as e:
+            print(f"ERROR sampling reference genome: {e}")
+            print("Continuing without normal sequences...")
+    else:
+        print("\n[4/5] Skipping reference genome sampling (BUILD_BALANCED_DATASET=False)")
+    
     
     # Step 4: Initialize and train model
     print(f"\n[4/5] Training deletion pathogenicity predictor...")
