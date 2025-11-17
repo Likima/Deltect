@@ -153,9 +153,9 @@ class DeletionPathogenicityPredictor:
         # TODO: we can play with these hyperparameters and see how it helps us
         self.model = RandomForestRegressor(
             n_estimators=100,  # Number of trees in the forest
-            max_depth=8,  # Maximum depth changed from 10 to 
-            min_samples_split=10,  # Minimum samples required to split a node
-            min_samples_leaf=10,  # Minimum samples required at a leaf node #MODIFIED 2->4
+            max_depth=40,  # Maximum depth changed from 10 to 
+            min_samples_split= 15,  # Minimum samples required to split a node
+            min_samples_leaf=1,  # Minimum samples required at a leaf node #MODIFIED 2->4
             random_state=random_state,
             n_jobs=-1  # idk lol
         )
