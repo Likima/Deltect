@@ -7,6 +7,7 @@ from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
 from data.ref_genome_data import ReferenceGenomeSampler
 from training.model import DeletionPathogenicityPredictor
+from utils.plot import visualize_results
 import json
 import logging
 from pathlib import Path
@@ -205,6 +206,7 @@ def main():
         
         print("\n" + "="*70)
         print("PIPELINE COMPLETE")
+        visualize_results(results, predictor)
         print("="*70)
         
     except ValueError as e:

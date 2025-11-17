@@ -192,7 +192,7 @@ def parse_read_to_metadata(read: pysam.AlignedSegment) -> ReadMetadata:
 
 
 def extract_bam_region(bam_file="ftp://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/10XGenomics/NA24385_phased_possorted_bam.bam", 
-                      chromosome="chr20", start=1000000, end=1000100, num_lines=10, 
+                      chromosome="chr22", start=1000000, end=1000100, num_lines=10, 
                       return_metadata=True, print_reads=True, print_stats=True):
     """
     Extract reads from a specific region of a BAM file and parse into metadata objects.
