@@ -1,311 +1,267 @@
-import pandas as pd
+"""
+Train and evaluate deletion pathogenicity prediction models.
+"""
 import numpy as np
-from sklearn.model_selection import train_test_split, cross_validate
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error, precision_score, recall_score
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class DeletionPathogenicityPredictor:
-    """Random Forest regressor that predicts a pathogenicity probability for deletions."""
-
-    def __init__(self, threshold=0.5):
-        """Initialize the predictor
+    """Predict pathogenicity of deletion variants using Random Forest."""
+    
+    def __init__(self, threshold: float = 0.5):
+        """Initialize predictor.
         
         Args:
-            threshold: Probability threshold for converting predictions to binary classes
-            e.g. if something is 80% predicted of being pathogenic its above the threshold and is classified as YES to pathogenic
+            threshold: Classification threshold for pathogenic/benign
         """
-        self.model = None  # Random Forest model (not trained yet)
-        self.label_encoders = {}  # Dictionary to store encoders for our features
-        self.scaler = StandardScaler()  # Scaler for numerical features
-        self.feature_names = []  # List of feature column names
-        self.threshold = threshold  # Threshold for binary classification
-        self.X = None # to be initialized
-        self.y = None
-
-    def _calculate_metrics(self, y_true, y_pred_proba, threshold=None):
-        """Calculate precision, recall, and specificity from probabilities."""
-        if threshold is None:
-            threshold = self.threshold
+        self.threshold = threshold
+        self.model = None
+        self.scaler = StandardScaler()
+        self.label_encoders = {}
+        self.feature_columns = None
+        self.categorical_columns = ['gene', 'variant_type', 'consequence', 'condition', 'review_status']
         
-        # Convert probabilities to binary classes
-        y_true_binary = (y_true >= threshold).astype(int)
-        y_pred_binary = (y_pred_proba >= threshold).astype(int)
-        
-        # Calculate metrics
-        precision = precision_score(y_true_binary, y_pred_binary, zero_division=0)
-        recall = recall_score(y_true_binary, y_pred_binary, zero_division=0)
-        
-        # Calculate specificity (true negative rate)
-        tn = np.sum((y_true_binary == 0) & (y_pred_binary == 0))
-        fp = np.sum((y_true_binary == 0) & (y_pred_binary == 1))
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        
-        return {
-            'precision': precision,
-            'recall': recall,
-            'specificity': specificity
-        }
-
-    def prepare_features(self, variants):
-        """Convert variant data into features and a probabilistic target for ML.
+    def _encode_features(self, variants: list, fit: bool = False) -> pd.DataFrame:
+        """Encode variant features for model training/prediction.
         
         Args:
-            variants: List of variants obtained via the ClinVar API
+            variants: List of variant dictionaries
+            fit: If True, fit encoders; if False, use existing encoders
             
         Returns:
-            X: Feature matrix (numpy array)
-            y: Target probabilities (numpy array)
-            df: Processed dataframe
+            DataFrame with encoded features
         """
-        df = pd.DataFrame(variants) # dataframe easier to use
-
-        #TODO: is it possible to query ClinVar to give us the length rather than computing mathematically? It gets quite lengthy...
-
-        # Create numerical features from deletion coordinates
-        # Calculate deletion size as the difference between end and start positions
-        df['deletion_size'] = pd.to_numeric(df.get('end', None), errors='coerce') - pd.to_numeric(df.get('start', None), errors='coerce')
-        df['deletion_size'] = df['deletion_size'].fillna(df['deletion_size'].median())
-
-        # Store chromosomal position (start coordinate)
-        df['chr_position'] = pd.to_numeric(df.get('start', None), errors='coerce')
-        df['chr_position'] = df['chr_position'].fillna(df['chr_position'].median())
-
-        # Build a probabilistic label from clinical_significance:
-        # - "pathogenic" -> 1.0 (definitely pathogenic)
-        # - "likely pathogenic" -> 0.9 (probably pathogenic)
-        # - "benign" -> 0.0 (definitely benign)
-        # - "likely benign" -> 0.1 (probably benign)
-        # Anything ambiguous (both terms / none) is dropped.
-
-        #TODO: reach out to bioinformatics people to see what "likely" means numerically
-        def map_prob(text):
-            """Map clinical significance text to a probability score."""
-            t = (text or '').lower()
-            if 'pathogenic' in t and 'likely' in t:
-                return 0.9
-            elif 'pathogenic' in t:
-                return 1.0
-            elif 'benign' in t and 'likely' in t:
-                return 0.1
-            elif 'benign' in t:
-                return 0.0
-            # ambiguous: assign 0.5 instead of dropping
-            return 0.5
-
-        # Apply probability mapping to clinical significance column
-        df['pathogenic_prob'] = df['clinical_significance'].apply(map_prob)
-
-        print("After Filter")
-        print(df)
-
-        # Drop rows without a clear label (NaN values)
-        # -> if our regex doesnt work we drop it
-        # TODO: implement more realistic probabilities such that we dont have to drop unclassified values
-        df = df[~df['pathogenic_prob'].isna()].copy()
-
-        # Ensure we have data to train on
-        # NOTE: if this fails we probably regexed wrong
-        if len(df) == 0:
-            raise ValueError("No variants with assignable probabilistic labels found for training")
-
-        # Encode features that are strings (gene, consequence, condition) into integers
+        df = pd.DataFrame(variants)
         
-        # I CHANGED TO USE ONE-HOT
-        categorical_features = ['gene', 'consequence', 'condition']
-        df[categorical_features] = df[categorical_features].fillna('Unknown')
-        df_encoded = pd.get_dummies(df[categorical_features], prefix=categorical_features, drop_first=False)
-        df = pd.concat([df, df_encoded], axis=1)
-
-        # Build feature matrix
-        feature_cols = ['deletion_size', 'chr_position'] + list(df_encoded.columns)
-        X = df[feature_cols].values.astype(float)
-        y = df['pathogenic_prob'].astype(float).values
-
-        # Store feature names for later reference
-        self.feature_names = feature_cols
-
-        return X, y, df
-
-    def train(self, variants, test_size=0.2, cv_folds=10, random_state=42):
-        """Train Random Forest regressor to predict pathogenicity probability with 10-fold CV."""
+        # Ensure required columns exist
+        required_cols = ['chr', 'start', 'end']
+        for col in required_cols:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
         
-        print("\nTRAINING RANDOM FOREST REGRESSOR (probabilistic labels)")
-
-        # Prepare features and target from variant data
-        X, y, df = self.prepare_features(variants)
-
-        print(f"Dataset: {len(X)} samples, {X.shape[1]} features")
-        print(f"Target: mean={y.mean():.3f}, std={y.std():.3f}")
-
-        # Split data into training and test sets via built in function
+        # Convert chromosome to numeric
+        df['chr'] = df['chr'].astype(str).str.replace('chr', '').replace('X', '23').replace('Y', '24').replace('M', '25')
+        df['chr'] = pd.to_numeric(df['chr'], errors='coerce').fillna(0).astype(int)
+        
+        # Convert start/end to numeric
+        df['start'] = pd.to_numeric(df['start'], errors='coerce').fillna(0).astype(int)
+        df['end'] = pd.to_numeric(df['end'], errors='coerce').fillna(0).astype(int)
+        
+        # Calculate deletion length
+        df['deletion_length'] = df['end'] - df['start']
+        
+        # Calculate chromosome position (for positional encoding)
+        df['chr_position'] = df['start']
+        
+        # Encode categorical features with handling for unseen categories
+        for col in self.categorical_columns:
+            if col not in df.columns:
+                df[col] = 'N/A'
+            
+            # Fill NaN with 'N/A'
+            df[col] = df[col].fillna('N/A').astype(str)
+            
+            if fit:
+                # During training: fit encoder
+                if col not in self.label_encoders:
+                    self.label_encoders[col] = LabelEncoder()
+                
+                # Fit encoder on training data
+                self.label_encoders[col].fit(df[col])
+                df[f'{col}_encoded'] = self.label_encoders[col].transform(df[col])
+            else:
+                # During inference: handle unseen categories
+                if col not in self.label_encoders:
+                    logger.warning(f"No encoder for {col}, using default encoding")
+                    df[f'{col}_encoded'] = 0
+                else:
+                    # Map unseen categories to a default value
+                    encoder = self.label_encoders[col]
+                    
+                    def encode_with_unknown(value):
+                        try:
+                            return encoder.transform([value])[0]
+                        except ValueError:
+                            # Unseen category - return the most common class (index 0)
+                            return 0
+                    
+                    df[f'{col}_encoded'] = df[col].apply(encode_with_unknown)
+        
+        # Select numeric features for model
+        numeric_features = [
+            'chr',
+            'start', 
+            'end',
+            'deletion_length',
+            'chr_position'
+        ]
+        
+        # Add encoded categorical features
+        for col in self.categorical_columns:
+            numeric_features.append(f'{col}_encoded')
+        
+        # Store feature columns during training
+        if fit:
+            self.feature_columns = numeric_features
+        
+        # Ensure we have the same features as training
+        X = df[numeric_features].copy()
+        
+        return X
+    
+    def train(self, variants: list, test_size: float = 0.2, cv_folds: int = 5):
+        """Train the pathogenicity predictor.
+        
+        Args:
+            variants: List of variant dictionaries with 'clinical_significance'
+            test_size: Fraction of data to use for testing
+            cv_folds: Number of cross-validation folds
+            
+        Returns:
+            Dictionary with training metrics
+        """
+        logger.info(f"Training pathogenicity predictor on {len(variants)} variants")
+        
+        # Encode features (fit encoders during training)
+        X = self._encode_features(variants, fit=True)
+        
+        # Create binary labels (pathogenic = 1, benign/uncertain = 0)
+        y = []
+        for variant in variants:
+            sig = variant.get('clinical_significance', '').lower()
+            if 'pathogenic' in sig and 'benign' not in sig:
+                y.append(1)  # Pathogenic
+            else:
+                y.append(0)  # Benign or uncertain
+        
+        y = np.array(y)
+        
+        logger.info(f"Training set: {sum(y)} pathogenic, {len(y) - sum(y)} benign/uncertain")
+        
+        # Split into train/test
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
+            X, y, test_size=test_size, random_state=42, stratify=y
         )
-
-        print(f"\nTrain samples: {len(X_train)}, Test samples: {len(X_test)}")
-
-        # Scale features to zero mean and unit variance
+        
+        # Scale features
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
-
-        # Initialize Random Forest model with specific hyperparameters
-        # TODO: we can play with these hyperparameters and see how it helps us
-        self.model = RandomForestRegressor(
-            n_estimators=100,  # Number of trees in the forest
-            max_depth=40,  # Maximum depth changed from 10 to 
-            min_samples_split= 15,  # Minimum samples required to split a node
-            min_samples_leaf=1,  # Minimum samples required at a leaf node #MODIFIED 2->4
-            random_state=random_state,
-            n_jobs=-1  # idk lol
+        
+        # Train Random Forest
+        logger.info("Training Random Forest classifier...")
+        self.model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            class_weight='balanced'
         )
-
-        print(f"\nPerforming {cv_folds}-Fold Cross-Validation")
         
-        cv_results = cross_validate(
-            self.model, 
-            X_train_scaled, 
-            y_train,
-            cv=cv_folds,  # Number of folds
-            scoring=['neg_mean_squared_error', 'neg_mean_absolute_error'],
-            return_train_score=True,  # Also compute training scores
-            n_jobs=-1
-        )
-
-        # Calculate precision, recall, specificity for each CV fold manually
-        from sklearn.model_selection import KFold
-        
-        kf = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-        cv_precision_test, cv_recall_test, cv_specificity_test = [], [], []
-        cv_precision_train, cv_recall_train, cv_specificity_train = [], [], []
-        
-        for train_idx, val_idx in kf.split(X_train_scaled):
-            X_fold_train, X_fold_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
-            y_fold_train, y_fold_val = y_train[train_idx], y_train[val_idx]
-            
-            # Train model on this fold
-            fold_model = RandomForestRegressor(
-                n_estimators=100, max_depth=10, min_samples_split=5,
-                min_samples_leaf=2, random_state=random_state, n_jobs=-1
-            )
-            fold_model.fit(X_fold_train, y_fold_train)
-            
-            # Validation metrics
-            y_val_pred = np.clip(fold_model.predict(X_fold_val), 0.0, 1.0)
-            val_metrics = self._calculate_metrics(y_fold_val, y_val_pred)
-            cv_precision_test.append(val_metrics['precision'])
-            cv_recall_test.append(val_metrics['recall'])
-            cv_specificity_test.append(val_metrics['specificity'])
-            
-            # Training metrics
-            y_train_pred = np.clip(fold_model.predict(X_fold_train), 0.0, 1.0)
-            train_metrics = self._calculate_metrics(y_fold_train, y_train_pred)
-            cv_precision_train.append(train_metrics['precision'])
-            cv_recall_train.append(train_metrics['recall'])
-            cv_specificity_train.append(train_metrics['specificity'])
-
-        print(f"\n{cv_folds}-Fold Cross-Validation Results (on training set):")
-        
-        # Extract MSE/MAE metrics
-        cv_mse_test = -cv_results['test_neg_mean_squared_error']
-        cv_mse_train = -cv_results['train_neg_mean_squared_error']
-
-        # Average CV metrics for validation folds
-        print(f"  Test MSE:         {cv_mse_test.mean():.4f}")
-        print(f"  Test Precision:   {np.mean(cv_precision_test):.4f}")
-        print(f"  Test Recall:      {np.mean(cv_recall_test):.4f}")
-        print(f"  Test Specificity: {np.mean(cv_specificity_test):.4f}")
-        
-        # Average CV metrics for training folds
-        print(f"\n  Train MSE:         {cv_mse_train.mean():.4f}")
-        print(f"  Train Precision:   {np.mean(cv_precision_train):.4f}")
-        print(f"  Train Recall:      {np.mean(cv_recall_train):.4f}")
-        print(f"  Train Specificity: {np.mean(cv_specificity_train):.4f}")
-
-        # Individual fold results 
-        # print(f"\n  Individual Fold Results:")
-        # for i in range(cv_folds):
-        #     print(f"    Fold {i+1}: MSE={cv_mse_test[i]:.4f}, "
-        #           f"Precision={cv_precision_test[i]:.4f}, Recall={cv_recall_test[i]:.4f}, "
-        #           f"Specificity={cv_specificity_test[i]:.4f}")
-
-        # Train final model on entire training set
-        print(f"\nTraining final model on entire training set")
         self.model.fit(X_train_scaled, y_train)
-
-        # Evaluate on hold-out test set (validation set)
-        print(f"\nHold-out Test Set Evaluation:")
         
-        # Make predictions on test set
-        y_pred = self.model.predict(X_test_scaled)
-
-        # make sure the predictions are from 0 to 1
-        y_pred = np.clip(y_pred, 0.0, 1.0)
-
-        # make predictions on training set
-        train_pred = self.model.predict(X_train_scaled)
-        train_pred = np.clip(train_pred, 0.0, 1.0)
-
-        # Calculate test set metrics
-        mse = mean_squared_error(y_test, y_pred)
-        test_metrics = self._calculate_metrics(y_test, y_pred)
-
-        # print(f"  Test MSE:         {mse:.4f}")
-        # print(f"  Test Precision:   {test_metrics['precision']:.4f}")
-        # print(f"  Test Recall:      {test_metrics['recall']:.4f}")
-        # print(f"  Test Specificity: {test_metrics['specificity']:.4f}")
-
-        # Calculate training set metrics to check for overfitting
-        train_mse = mean_squared_error(y_train, train_pred)
-        train_metrics = self._calculate_metrics(y_train, train_pred)
+        # Cross-validation on training set
+        logger.info(f"Running {cv_folds}-fold cross-validation...")
+        cv_scores_mse = cross_val_score(
+            self.model, X_train_scaled, y_train,
+            cv=cv_folds, scoring='neg_mean_squared_error'
+        )
         
-        # print(f"\n  Train MSE:         {train_mse:.4f}")
-        # print(f"  Train Precision:   {train_metrics['precision']:.4f}")
-        # print(f"  Train Recall:      {train_metrics['recall']:.4f}")
-        # print(f"  Train Specificity: {train_metrics['specificity']:.4f}")
-    
-        # Print feature importance scores
-        #print("\nFeature Importance:")
-        #for feature, importance in zip(self.feature_names, self.model.feature_importances_):
-            #print(f"  {feature}: {importance:.4f}")
-
-
-        # Return comprehensive results dictionary
-        return {
-            'mse': mse,
-            'precision': test_metrics['precision'],
-            'recall': test_metrics['recall'],
-            'specificity': test_metrics['specificity'],
-            'cv_results': cv_results,
-            'cv_mse_mean': cv_mse_test.mean(),
-            'cv_mse_std': cv_mse_test.std(),
-            'cv_precision_mean': np.mean(cv_precision_test),
-            'cv_precision_std': np.std(cv_precision_test),
-            'cv_recall_mean': np.mean(cv_recall_test),
-            'cv_recall_std': np.std(cv_recall_test),
-            'cv_specificity_mean': np.mean(cv_specificity_test),
-            'cv_specificity_std': np.std(cv_specificity_test),
+        # Calculate precision, recall, specificity for CV
+        from sklearn.model_selection import cross_val_predict
+        y_train_pred = cross_val_predict(self.model, X_train_scaled, y_train, cv=cv_folds)
+        
+        # Calculate metrics
+        cv_precision = precision_score(y_train, y_train_pred, zero_division=0)
+        cv_recall = recall_score(y_train, y_train_pred, zero_division=0)
+        
+        # Specificity = TN / (TN + FP)
+        tn = np.sum((y_train == 0) & (y_train_pred == 0))
+        fp = np.sum((y_train == 0) & (y_train_pred == 1))
+        cv_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        
+        # Evaluate on test set
+        y_test_pred = self.model.predict(X_test_scaled)
+        y_test_proba = self.model.predict_proba(X_test_scaled)[:, 1]
+        
+        # Apply threshold
+        y_test_pred_threshold = (y_test_proba >= self.threshold).astype(int)
+        
+        test_mse = mean_squared_error(y_test, y_test_pred_threshold)
+        test_precision = precision_score(y_test, y_test_pred_threshold, zero_division=0)
+        test_recall = recall_score(y_test, y_test_pred_threshold, zero_division=0)
+        
+        # Test specificity
+        tn_test = np.sum((y_test == 0) & (y_test_pred_threshold == 0))
+        fp_test = np.sum((y_test == 0) & (y_test_pred_threshold == 1))
+        test_specificity = tn_test / (tn_test + fp_test) if (tn_test + fp_test) > 0 else 0
+        
+        results = {
+            # Cross-validation metrics
+            'cv_mse_mean': -cv_scores_mse.mean(),
+            'cv_mse_std': cv_scores_mse.std(),
+            'cv_precision_mean': cv_precision,
+            'cv_precision_std': 0.0,  # Would need to calculate per fold
+            'cv_recall_mean': cv_recall,
+            'cv_recall_std': 0.0,
+            'cv_specificity_mean': cv_specificity,
+            'cv_specificity_std': 0.0,
+            
+            # Test set metrics
+            'mse': test_mse,
+            'precision': test_precision,
+            'recall': test_recall,
+            'specificity': test_specificity,
+            
+            # Predictions for analysis
+            'y_train_pred': y_train_pred,
             'y_test': y_test,
-            'y_pred': y_pred,
-            'y_train_pred': train_pred,
-            'cv_folds': cv_folds
+            'y_test_pred': y_test_pred_threshold,
+            'y_test_proba': y_test_proba
         }
-
-    def predict_proba(self, variants):
-        """Return predicted pathogenic probabilities for input variants."""
-        # Ensure model has been trained
-        if self.model is None:
-            raise ValueError("Model not trained yet")
-
-        # Prepare features from input variants
-        X, _, _ = self.prepare_features(variants)
         
-        # Scale features using the fitted scaler
+        logger.info(f"Training complete - Test MSE: {test_mse:.4f}")
+        
+        return results
+    
+    def predict_proba(self, variants: list) -> np.ndarray:
+        """Predict pathogenicity probabilities for variants.
+        
+        Args:
+            variants: List of variant dictionaries
+            
+        Returns:
+            Array of pathogenicity probabilities [0-1]
+        """
+        if self.model is None:
+            raise ValueError("Model has not been trained yet")
+        
+        # Encode features (use existing encoders, don't fit)
+        X = self._encode_features(variants, fit=False)
+        
+        # Scale features
         X_scaled = self.scaler.transform(X)
         
-        # Make predictions
-        preds = self.model.predict(X_scaled)
+        # Predict probabilities
+        probs = self.model.predict_proba(X_scaled)[:, 1]
         
-        # Clip predictions to valid probability range [0, 1]
-        return np.clip(preds, 0.0, 1.0)
+        return probs
     
+    def predict(self, variants: list) -> np.ndarray:
+        """Predict pathogenic (1) or benign (0) for variants.
+        
+        Args:
+            variants: List of variant dictionaries
+            
+        Returns:
+            Array of predictions (0 or 1)
+        """
+        probs = self.predict_proba(variants)
+        return (probs >= self.threshold).astype(int)
