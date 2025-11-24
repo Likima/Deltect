@@ -208,6 +208,8 @@ __marimo__/
 
 *.fa
 *.fai
+*.bai 
+*.gtf
 
 output/*.json
 
