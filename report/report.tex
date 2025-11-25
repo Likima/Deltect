@@ -14,22 +14,76 @@
     \maketitle
 
     \section{AI System (~1 page)}
-        \subsection{Introduction}
-            The goal of our project is to develop a machine learning model that can
-            predict the pathogenicity of genomic deletions. 
 
-        \subsection{Methology}
+        \subsection{Introduction}
+            The goal of our project is to develop a machine learning model that can predict the pathogenicity 
+            of genomic deletions. Genomic deletions are a type of structural variant where a segment of DNA is 
+            missing. Depending on where they occur, deletions can be associated with benign, to pathogenic variants
+            associated with diseases. 
+
+            \vspace{12pt}
+            \noindent
+            In clinical genetics, manually classifying the pathogenicity of a deletion is challenging and time 
+            consuming. Fortunately, there are databases such as ClinVar that provide curated labels of pathogenicity,
+            but for most, deletions remain unclassified, especially when extracted from sequencing data such as 
+            BAM/SAM files that are commonly used in practice. Our model aims to leverage the curated deletions to 
+            train a classifier than can estimate a patient's genomic data through BAM/CRAM files, and classify if a
+            deletion is pathogenic. 
+
+        \subsection{Methodology}
+            Our methodology for our AI model is based on a system with two main components:
+            \begin{itemize}
+                \item[1.] \textbf{Deletion Extractor} \\
+                    Identifies deletions from analyzing a BAM's CIGAR strings. (should this be included? probs not right because there is inference)
+                \item[2.] \textbf{Pathogenic Predictor} \\
+                    A supervised learning model trained on ClinVar deletion variants to predict the pathogenicity
+                    of these deletions extracted from the Deletion Extractor. 
+            \end{itemize} 
+
+        \subsubsection{Feature Engineering}
+            For each deletion variant, we construct a set of features based on its position and annotations:
+            \begin{itemize}
+                \item Chromosome Number
+                \item Start and end points ..... continue this 
+            \end{itemize}
+            - talk about categorical features and standardized to adhere to numeric feature vector consistency.
+            - mention LabelEncoder and StandardScaler
+
+        \subsubsection{ML Model Choice and Training}
+            We used Sci-kit Learn's Random Forest Classifier to predict pathogenicity. 
+
+            The classifier produces a probability that each variant is pathogenic (?)
+            Talk about the data with unknown and if we gave it a probability like MS 2
+
+        \subsubsection{Testing}
+            We split 80\% of the dataset for training and 20\% for testing. We perform 10-fold cross validation 
+            on the training set to esitmate the performance of our model. We evaluate the model using mean squared error
+            (MSE) on the predictions, and as well as precision, recall, and specificity. 
+
         \subsection{AI Pipeline}
+            Our system can be viewed as an end-to-end AI pipeline with two main stages:
+            \begin{itemize}
+                \item[1.] \textbf{Training} \\
+                    Using Random Forest to learn pathogenicity from ClinVar
+                \item[2.] \textbf{Inference} \\
+                    The trained predictor, is reused during inference on deletions extracted from BAM files.
+            \end{itemize} 
+
+            \textbf{Training Pipeline}
+
+            \textbf{Inference Pipeline}
         \subsection{Limitations}
 
 
-    \section{Feature Table (1-2 pages)}
+    \section{Features Table (1-2 pages)}
 
         \begin{tabular}{ |c|c|c|c|c|c| }
             \hline
-            
             \textbf{Description} & \textbf{Platform} & \textbf{Completeness} & \textbf{Code} & \textbf{Authors(s)} & \textbf{Notes} \\ 
             \hline
+            Random Forest Regressor & Python \\
+            \hline
+            BAM extraction
         \end{tabular}
 
     \section{External Tools \& Libraries (1/2 page)}
