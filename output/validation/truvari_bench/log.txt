@@ -1,6 +1,6 @@
-2025-11-24 23:37:54,823 [INFO] Truvari v5.4.0
-2025-11-24 23:37:54,823 [INFO] Command /home/brandon/Deltect/.venv/bin/truvari bench -b output/validation/HG002_GRCh37_1_22_v4.2.1_benchmark.vcf_split.vcf.gz -c output/validation/predicted_deletions.sorted.vcf.gz -o output/validation/truvari_bench -f hs37d5.fa --sizemin 1 --sizemax 1000000 --pctsize 0.7 --pctseq 0.7 --pctovl 0.0
-2025-11-24 23:37:54,824 [INFO] Params:
+2025-11-25 00:24:13,555 [INFO] Truvari v5.4.0
+2025-11-25 00:24:13,555 [INFO] Command /home/brandon/Deltect/.venv/bin/truvari bench -b output/validation/HG002_GRCh37_1_22_v4.2.1_benchmark.vcf_split.vcf.gz -c output/validation/predicted_deletions.sorted.vcf.gz -o output/validation/truvari_bench -f hs37d5.fa --sizemin 1 --sizemax 1000000 --pctsize 0.7 --pctseq 0.7 --pctovl 0.0
+2025-11-25 00:24:13,555 [INFO] Params:
 {
     "base": "/home/brandon/Deltect/output/validation/HG002_GRCh37_1_22_v4.2.1_benchmark.vcf_split.vcf.gz",
     "comp": "/home/brandon/Deltect/output/validation/predicted_deletions.sorted.vcf.gz",
@@ -36,9 +36,9 @@
     "skip_gt": false,
     "max_resolve": 25000
 }
-2025-11-24 23:39:56,136 [INFO] Zipped 4081654 variants Counter({'base': 4081381, 'comp': 273})
-2025-11-24 23:39:56,136 [INFO] 418301 chunks of 4081654 variants Counter({'__filtered': 3451202, 'base': 630179, 'comp': 273})
-2025-11-24 23:40:07,119 [INFO] Stats: {
+2025-11-25 00:26:18,214 [INFO] Zipped 4081654 variants Counter({'base': 4081381, 'comp': 273})
+2025-11-25 00:26:18,217 [INFO] 418301 chunks of 4081654 variants Counter({'__filtered': 3451202, 'base': 630179, 'comp': 273})
+2025-11-25 00:26:28,647 [INFO] Stats: {
     "TP-base": 8,
     "TP-comp": 8,
     "FP": 265,
@@ -65,4 +65,4 @@
         }
     }
 }
-2025-11-24 23:40:07,119 [INFO] Finished bench
+2025-11-25 00:26:28,648 [INFO] Finished bench

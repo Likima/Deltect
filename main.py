@@ -12,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 import numpy as np
+import pandas as pd
 
 from validation.truvari_validator import TruvariValidator
 
@@ -27,23 +28,36 @@ def train_pipeline():
     print("="*70)
     
     # Configuration
-    CHROMOSOME = "3" # arbitrary
-    MAX_VARIANTS = 3000
+    CHROMOSOMES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]  # Multiple chromosomes
+    MAX_VARIANTS_PER_CHR = 1000
     TEST_SIZE = 0.2
-    CV_FOLDS = 10
+    CV_FOLDS = 5  # Reduced from 10 for faster training with larger dataset
     SAVE_OUTPUTS = True
     REFERENCE_FASTA = "hs37d5.fa"
+    BALANCE_CLASSES = True
     
     # Step 1: Fetch deletion variants from ClinVar
     print(f"\n[1/4] Fetching deletion variants from ClinVar...")
-    print(f"Chromosome: {CHROMOSOME}")
-    print(f"Maximum variants: {MAX_VARIANTS}")
+    print(f"Chromosomes: {', '.join(CHROMOSOMES)}")
+    print(f"Maximum variants per chromosome: {MAX_VARIANTS_PER_CHR}")
     
-    raw_variants = fetch_clinvar_deletions_entrez(chrom=CHROMOSOME, max_results=MAX_VARIANTS)
+    all_raw_variants = []
+    for chrom in CHROMOSOMES:
+        print(f"  Fetching chr{chrom}...", end=" ")
+        try:
+            chrom_variants = fetch_clinvar_deletions_entrez(
+                chrom=chrom, 
+                max_results=MAX_VARIANTS_PER_CHR
+            )
+            all_raw_variants.extend(chrom_variants)
+            print(f"✓ {len(chrom_variants)} variants")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            logger.warning(f"Failed to fetch chr{chrom}: {e}")
     
-    print(f"Received {len(raw_variants)} raw deletion variants from ClinVar")
+    print(f"\nReceived {len(all_raw_variants)} total deletion variants from ClinVar")
     
-    if not raw_variants:
+    if not all_raw_variants:
         print("ERROR: No variants fetched. Exiting.")
         return None
     
@@ -53,14 +67,14 @@ def train_pipeline():
         output_dir.mkdir(exist_ok=True)
         
         with open(output_dir / "raw_variants.json", "w") as f:
-            json.dump(raw_variants, f, indent=2, default=str)
+            json.dump(all_raw_variants, f, indent=2, default=str)
         print(f"Saved raw variants to {output_dir / 'raw_variants.json'}")
     
     # Step 2: Process variants
     print("\n[2/4] Processing and normalizing variants...")
     
     # Pass reference genome to extract sequences
-    processed_variants = pass_through_variants(raw_variants, reference_fasta=REFERENCE_FASTA)
+    processed_variants = pass_through_variants(all_raw_variants, reference_fasta=REFERENCE_FASTA)
     
     print(f"Processed {len(processed_variants)} variants")
     
@@ -84,76 +98,141 @@ def train_pipeline():
     print(f"\n[4/4] Training pathogenicity predictor...")
     print(f"Test set size: {TEST_SIZE*100}%")
     print(f"Cross-validation folds: {CV_FOLDS}")
+    print(f"Class balancing: {'Enabled' if BALANCE_CLASSES else 'Disabled'}")
     
     pathogenicity_predictor = DeletionPathogenicityPredictor(threshold=0.5)
     
     try:
-        # Train on deletion variants
+        # Train on deletion variants with improved model
         path_results = pathogenicity_predictor.train(
             processed_variants,
             test_size=TEST_SIZE,
-            cv_folds=CV_FOLDS
+            cv_folds=CV_FOLDS,
+            balance_classes=BALANCE_CLASSES
         )
         
-        print("\nPathogenicity Predictor Results:")
-        print(f"  Test MSE:         {path_results['mse']:.4f}")
-        print(f"  Test Precision:   {path_results['precision']:.4f}")
-        print(f"  Test Recall:      {path_results['recall']:.4f}")
-        print(f"  Test Specificity: {path_results['specificity']:.4f}")
+        print("\n" + "="*70)
+        print("PATHOGENICITY PREDICTOR RESULTS")
+        print("="*70)
         
-        # Save model results
+        # Cross-validation results
+        print("\nCross-Validation Performance (Mean ± Std):")
+        print(f"  Precision:    {path_results.get('cv_precision', 0):.4f}")
+        print(f"  Recall:       {path_results.get('cv_recall', 0):.4f}")
+        print(f"  F1 Score:     {path_results.get('cv_f1', 0):.4f}")
+        print(f"  Specificity:  {path_results.get('cv_specificity', 0):.4f}")
+        print(f"  AUC-ROC:      {path_results.get('cv_auc', 0):.4f}")
+        
+        # Test set results
+        print("\nTest Set Performance:")
+        print(f"  Precision:    {path_results.get('test_precision', 0):.4f}")
+        print(f"  Recall:       {path_results.get('test_recall', 0):.4f}")
+        print(f"  F1 Score:     {path_results.get('test_f1', 0):.4f}")
+        print(f"  Specificity:  {path_results.get('test_specificity', 0):.4f}")
+        print(f"  AUC-ROC:      {path_results.get('test_auc', 0):.4f}")
+        
+        # Confusion matrix
+        print("\nTest Set Confusion Matrix:")
+        print(f"  True Positives:  {path_results.get('test_tp', 0)}")
+        print(f"  True Negatives:  {path_results.get('test_tn', 0)}")
+        print(f"  False Positives: {path_results.get('test_fp', 0)}")
+        print(f"  False Negatives: {path_results.get('test_fn', 0)}")
+        
+        # Dataset statistics
+        print("\nDataset Information:")
+        print(f"  Total variants:     {len(processed_variants)}")
+        print(f"  Training samples:   {path_results.get('n_train', 0)}")
+        print(f"  Test samples:       {path_results.get('n_test', 0)}")
+        print(f"  Number of features: {path_results.get('n_features', 0)}")
+        
+        # Save comprehensive model results
         if SAVE_OUTPUTS:
-            pathogenic_count = sum(1 for v in processed_variants if "pathogenic" in v.get("clinical_significance", "").lower())
+            # Calculate dataset statistics
+            pathogenic_count = sum(
+                1 for v in processed_variants 
+                if 'pathogenic' in v.get('clinical_significance', '').lower() 
+                and 'benign' not in v.get('clinical_significance', '').lower()
+            )
             benign_count = len(processed_variants) - pathogenic_count
-            
-            train_pathogenic = sum(1 for pred in path_results['y_train_pred'] if pred >= pathogenicity_predictor.threshold)
-            test_pathogenic = sum(1 for y in path_results['y_test'] if y >= pathogenicity_predictor.threshold)
             
             results_summary = {
                 'configuration': {
-                    'chromosome': CHROMOSOME,
-                    'max_variants': MAX_VARIANTS,
+                    'chromosomes': CHROMOSOMES,
+                    'max_variants_per_chr': MAX_VARIANTS_PER_CHR,
                     'test_size': TEST_SIZE,
                     'cv_folds': CV_FOLDS,
-                    'threshold': pathogenicity_predictor.threshold
+                    'threshold': pathogenicity_predictor.threshold,
+                    'balance_classes': BALANCE_CLASSES,
+                    'reference_fasta': REFERENCE_FASTA
                 },
                 'cross_validation': {
-                    'mse_mean': float(path_results['cv_mse_mean']),
-                    'mse_std': float(path_results['cv_mse_std']),
-                    'precision_mean': float(path_results['cv_precision_mean']),
-                    'precision_std': float(path_results['cv_precision_std']),
-                    'recall_mean': float(path_results['cv_recall_mean']),
-                    'recall_std': float(path_results['cv_recall_std']),
-                    'specificity_mean': float(path_results['cv_specificity_mean']),
-                    'specificity_std': float(path_results['cv_specificity_std'])
+                    'precision': float(path_results.get('cv_precision', 0)),
+                    'recall': float(path_results.get('cv_recall', 0)),
+                    'f1_score': float(path_results.get('cv_f1', 0)),
+                    'specificity': float(path_results.get('cv_specificity', 0)),
+                    'auc_roc': float(path_results.get('cv_auc', 0))
                 },
                 'test_set': {
-                    'mse': float(path_results['mse']),
-                    'precision': float(path_results['precision']),
-                    'recall': float(path_results['recall']),
-                    'specificity': float(path_results['specificity'])
+                    'precision': float(path_results.get('test_precision', 0)),
+                    'recall': float(path_results.get('test_recall', 0)),
+                    'f1_score': float(path_results.get('test_f1', 0)),
+                    'specificity': float(path_results.get('test_specificity', 0)),
+                    'auc_roc': float(path_results.get('test_auc', 0)),
+                    'confusion_matrix': {
+                        'true_positives': int(path_results.get('test_tp', 0)),
+                        'true_negatives': int(path_results.get('test_tn', 0)),
+                        'false_positives': int(path_results.get('test_fp', 0)),
+                        'false_negatives': int(path_results.get('test_fn', 0))
+                    }
                 },
                 'dataset_info': {
                     'total_variants': len(processed_variants),
+                    'raw_variants_fetched': len(all_raw_variants),
                     'pathogenic_count': pathogenic_count,
                     'benign_count': benign_count,
                     'pathogenic_ratio': pathogenic_count / len(processed_variants) if processed_variants else 0,
-                    'training_samples': len(path_results['y_train_pred']),
-                    'training_pathogenic': train_pathogenic,
-                    'training_benign': len(path_results['y_train_pred']) - train_pathogenic,
-                    'test_samples': len(path_results['y_test']),
-                    'test_pathogenic': test_pathogenic,
-                    'test_benign': len(path_results['y_test']) - test_pathogenic
-                }
+                    'training_samples': int(path_results.get('n_train', 0)),
+                    'test_samples': int(path_results.get('n_test', 0)),
+                    'n_features': int(path_results.get('n_features', 0))
+                },
+                'feature_importance': path_results.get('feature_importance', [])
             }
             
+            # Save to JSON
             with open(output_dir / "pathogenicity_predictor_results.json", "w") as f:
                 json.dump(results_summary, f, indent=2)
-            print(f"Saved pathogenicity predictor results to {output_dir / 'pathogenicity_predictor_results.json'}")
+            print(f"\nSaved comprehensive results to {output_dir / 'pathogenicity_predictor_results.json'}")
+            
+            # Also save a CSV with predictions for analysis
+            if 'y_test_proba' in path_results and 'y_test' in path_results:
+                predictions_df = pd.DataFrame({
+                    'true_label': path_results['y_test'],
+                    'predicted_prob': path_results['y_test_proba'],
+                    'predicted_label': path_results['y_test_pred']
+                })
+                predictions_df.to_csv(output_dir / "test_predictions.csv", index=False)
+                print(f"Saved test predictions to {output_dir / 'test_predictions.csv'}")
         
         print("\n" + "="*70)
         print("TRAINING PIPELINE COMPLETE")
         print("="*70)
+        
+        # Print performance summary
+        test_f1 = path_results.get('test_f1', 0)
+        test_auc = path_results.get('test_auc', 0)
+        
+        if test_f1 >= 0.8 and test_auc >= 0.85:
+            print("\n✓ Model performance: EXCELLENT")
+        elif test_f1 >= 0.6 and test_auc >= 0.7:
+            print("\n✓ Model performance: GOOD")
+        elif test_f1 >= 0.4 and test_auc >= 0.6:
+            print("\n⚠ Model performance: ACCEPTABLE")
+        else:
+            print("\n✗ Model performance: NEEDS IMPROVEMENT")
+            print("  Consider:")
+            print("  - Fetching more variants (increase MAX_VARIANTS_PER_CHR)")
+            print("  - Adding more chromosomes")
+            print("  - Checking data quality and feature engineering")
         
         # Return trained model
         return pathogenicity_predictor
@@ -164,6 +243,15 @@ def train_pipeline():
         print("="*70)
         print(f"Error: {e}")
         logger.error(f"Training error: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
+        return None
+    except Exception as e:
+        print("\n" + "="*70)
+        print("ERROR: Unexpected Training Error")
+        print("="*70)
+        print(f"Error: {e}")
+        logger.error(f"Unexpected training error: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
         return None
