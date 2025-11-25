@@ -218,3 +218,14 @@ __marimo__/
 
 output/*.json
 
+# LaTeX build files
+*.aux
+*.log
+*.synctex.gz
+*.toc
+*.out
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+
