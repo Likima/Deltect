@@ -2,6 +2,7 @@
 Main pipeline for fetching and processing genomic variants from ClinVar,
 and training a deletion pathogenicity prediction model.
 """
+from typing import Dict, List
 from data.api import fetch_clinvar_deletions_entrez
 from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
@@ -11,6 +12,8 @@ import json
 import logging
 from pathlib import Path
 import numpy as np
+
+from validation.truvari_validator import TruvariValidator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -194,7 +197,8 @@ def inference_pipeline(
     gene_annotation_gtf: str = None,
     output_dir: Path = Path("output"),
     min_deletion_size: int = 1,
-    min_mapping_quality: int = 20
+    min_mapping_quality: int = 20,
+    truth_vcf: str = None
 ):
     """Inference pipeline: analyze BAM file region for pathogenic deletions.
     
@@ -209,13 +213,14 @@ def inference_pipeline(
         output_dir: Output directory for results
         min_deletion_size: Minimum deletion size to consider (default: 1bp)
         min_mapping_quality: Minimum mapping quality for reads (default: 20)
+        truth_vcf: Path to truth set VCF for Truvari validation (optional)
     """
     
     print("="*70)
     print("DELETION PATHOGENICITY PREDICTION - INFERENCE PIPELINE")
     print("="*70)
     
-    print(f"\n[1/2] Extracting deletions from BAM file using CIGAR strings...")
+    print(f"\n[1/3] Extracting deletions from BAM file using CIGAR strings...")
     print(f"Region: {chromosome}:{start}-{end}")
     print(f"Filters: min_size={min_deletion_size}bp, min_mapq={min_mapping_quality}")
     
@@ -243,7 +248,7 @@ def inference_pipeline(
             skip_duplicates=True,
             skip_secondary=True,
             skip_supplementary=True,
-            annotate_genes=True  # Annotate with genes if GTF provided
+            annotate_genes=True
         )
         
         print(f"Extracted {len(deletions)} deletion variants from CIGAR strings")
@@ -264,7 +269,7 @@ def inference_pipeline(
         return []
     
     # Step 2: Convert DeletionVariant objects to format expected by pathogenicity predictor
-    print(f"\n[2/2] Converting deletions and predicting pathogenicity...")
+    print(f"\n[2/3] Converting deletions and predicting pathogenicity...")
     
     # Use the built-in to_variant_dict() method
     candidate_deletions = [deletion.to_variant_dict() for deletion in deletions]
@@ -324,6 +329,19 @@ def inference_pipeline(
             json.dump(results_serializable, f, indent=2)
         print(f"\nSaved results to {output_dir / 'pathogenic_deletions.json'}")
         
+        # Step 3: Validate with Truvari if truth VCF provided
+        if truth_vcf:
+            print(f"\n[3/3] Validating predictions with Truvari...")
+            validate_with_truvari(
+                predicted_deletions=results,
+                truth_vcf=truth_vcf,
+                reference_fasta=reference_fasta,
+                output_dir=output_dir / "validation"
+            )
+        else:
+            print("\n[3/3] Skipping validation (no truth VCF provided)")
+            print("  Use --truth-vcf to enable Truvari validation")
+        
         print("\n" + "="*70)
         print("INFERENCE PIPELINE COMPLETE")
         print("="*70)
@@ -338,13 +356,65 @@ def inference_pipeline(
         return []
 
 
+def validate_with_truvari(
+    predicted_deletions: List[Dict],
+    truth_vcf: str,
+    reference_fasta: str = "hs37d5.fa",
+    output_dir: Path = Path("output/validation")
+) -> Dict:
+    """
+    Validate deletion predictions using Truvari against a truth set.
+    
+    Args:
+        predicted_deletions: List of predicted deletion dictionaries
+        truth_vcf: Path to truth set VCF (e.g., ClinVar, GIAB)
+        reference_fasta: Path to reference genome
+        output_dir: Output directory for validation results
+        
+    Returns:
+        Validation metrics dictionary
+    """
+    print("\n" + "="*70)
+    print("TRUVARI VALIDATION")
+    print("="*70)
+    
+    validator = TruvariValidator(reference_fasta=reference_fasta)
+    
+    try:
+        metrics = validator.validate_predictions(
+            predicted_deletions=predicted_deletions,
+            truth_vcf=Path(truth_vcf),
+            output_dir=output_dir
+        )
+        
+        print("\nTruvari Bench Results:")
+        print(f"  Precision: {metrics['truvari_bench'].get('precision', 0):.4f}")
+        print(f"  Recall: {metrics['truvari_bench'].get('recall', 0):.4f}")
+        print(f"  F1 Score: {metrics['truvari_bench'].get('f1', 0):.4f}")
+        
+        print("\nPathogenicity Analysis:")
+        path_metrics = metrics['pathogenicity_analysis']
+        print(f"  True Positives: {path_metrics['true_positives']}")
+        print(f"  False Positives: {path_metrics['false_positives']}")
+        print(f"  False Negatives: {path_metrics['false_negatives']}")
+        print(f"  Pathogenic TP: {path_metrics['pathogenic_tp']}")
+        print(f"  Pathogenic FP: {path_metrics['pathogenic_fp']}")
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"ERROR during Truvari validation: {e}")
+        logger.error(f"Truvari validation error: {e}", exc_info=True)
+        return {}
+
+
 def main():
-    """Main entry point - can run training or inference."""
+    """Main entry point - can run training, inference, or validation."""
     import argparse
     
     parser = argparse.ArgumentParser(description="Deletion pathogenicity prediction pipeline")
-    parser.add_argument('--mode', choices=['train', 'inference', 'both'], default='train',
-                       help='Pipeline mode')
+    parser.add_argument('--mode', choices=['train', 'inference', 'both', 'validate'], 
+                       default='train', help='Pipeline mode')
     parser.add_argument('--bam', type=str, help='BAM file for inference')
     parser.add_argument('--chr', type=str, default='chr22', help='Chromosome')
     parser.add_argument('--start', type=int, default=1000000, help='Start position')
@@ -353,6 +423,11 @@ def main():
     parser.add_argument('--gtf', type=str, help='Gene annotation GTF file (e.g., gencode.v19.annotation.gtf)')
     parser.add_argument('--min-del-size', type=int, default=1, help='Minimum deletion size (bp)')
     parser.add_argument('--min-mapq', type=int, default=20, help='Minimum mapping quality')
+    
+    parser.add_argument('--truth-vcf', type=str, 
+                       help='Truth set VCF for Truvari validation (e.g., GIAB, ClinVar)')
+    parser.add_argument('--validate-predictions', type=str,
+                       help='JSON file with predictions to validate')
     
     args = parser.parse_args()
     
@@ -380,8 +455,35 @@ def main():
                 reference_fasta=args.reference,
                 gene_annotation_gtf=args.gtf,
                 min_deletion_size=args.min_del_size,
-                min_mapping_quality=args.min_mapq
+                min_mapping_quality=args.min_mapq,
+                truth_vcf=args.truth_vcf
             )
+    
+    elif args.mode == 'inference':
+        print("ERROR: Inference mode requires a trained model")
+        print("Use --mode both to train and then run inference")
+        return
+    
+    elif args.mode == 'validate':
+        if not args.truth_vcf:
+            print("ERROR: --truth-vcf required for validation mode")
+            return
+        
+        if not args.validate_predictions:
+            print("ERROR: --validate-predictions required for validation mode")
+            return
+        
+        # Load predictions
+        with open(args.validate_predictions) as f:
+            predictions = json.load(f)
+        
+        # Run validation
+        validate_with_truvari(
+            predicted_deletions=predictions,
+            truth_vcf=args.truth_vcf,
+            reference_fasta=args.reference
+        )
+
 
 if __name__ == "__main__":
     main()

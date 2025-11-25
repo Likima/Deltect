@@ -210,6 +210,11 @@ __marimo__/
 *.fai
 *.bai 
 *.gtf
+*.gz
+*.tbi
+*.vcf
+
+*.json
 
 output/*.json
 

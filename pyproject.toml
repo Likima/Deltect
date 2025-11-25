@@ -16,4 +16,5 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
     "supertree>=0.5.5",
+    "truvari>=5.4.0",
 ]
