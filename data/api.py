@@ -99,45 +99,89 @@ class ClinVarClient:
         self,
         chr: str = "22",
         max_results: int = 500
-) -> List[Dict]:
-        """Fetch all short tandem repeat variants from dbVar using batch requests.
+    ) -> List[Dict]:
+        """Fetch deletion variants from ClinVar with 2/3 pathogenic and 1/3 non-pathogenic.
         
         Args:
+            chr: Chromosome number
+            max_results: Maximum total number of results to fetch
+            
+        Returns:
+            List of variant dictionaries (2/3 pathogenic, 1/3 non-pathogenic)
+        """
+        # Calculate split: 2/3 pathogenic, 1/3 non-pathogenic
+        pathogenic_count = int(max_results * 2 / 3)
+        non_pathogenic_count = max_results - pathogenic_count
+        
+        logger.info(f"Fetching {pathogenic_count} pathogenic and {non_pathogenic_count} non-pathogenic variants")
+        
+        # Base search term (common to both)
+        base_term = (
+            f'"{chr}"[Chromosome] '
+            f'AND "deletion"[Type of variation] '
+            f'AND ("criteria provided, multiple submitters, no conflicts"[Review status] '
+            f'OR "criteria provided, single submitter"[Review status])'
+        )
+        
+        # Pathogenic search term
+        pathogenic_term = (
+            f'{base_term} '
+            f'AND ("pathogenic"[Clinical significance] '
+            f'OR "likely pathogenic"[Clinical significance])'
+        )
+        
+        # Non-pathogenic search term
+        non_pathogenic_term = (
+            f'{base_term} '
+            f'AND ("benign"[Clinical significance] '
+            f'OR "likely benign"[Clinical significance])'
+        )
+        
+        all_variants = []
+        
+        # Fetch pathogenic variants
+        logger.info(f"Searching for pathogenic variants: {pathogenic_term}")
+        pathogenic_variants = self._fetch_variants_by_term(pathogenic_term, pathogenic_count)
+        all_variants.extend(pathogenic_variants)
+        logger.info(f"Fetched {len(pathogenic_variants)} pathogenic variants")
+        
+        # Fetch non-pathogenic variants
+        logger.info(f"Searching for non-pathogenic variants: {non_pathogenic_term}")
+        non_pathogenic_variants = self._fetch_variants_by_term(non_pathogenic_term, non_pathogenic_count)
+        all_variants.extend(non_pathogenic_variants)
+        logger.info(f"Fetched {len(non_pathogenic_variants)} non-pathogenic variants")
+        
+        logger.info(f"Total variants fetched: {len(all_variants)} "
+                    f"(pathogenic: {len(pathogenic_variants)}, non-pathogenic: {len(non_pathogenic_variants)})")
+        
+        return all_variants
+
+    def _fetch_variants_by_term(self, search_term: str, max_results: int) -> List[Dict]:
+        """Helper method to fetch variants for a specific search term.
+        
+        Args:
+            search_term: Complete search query
             max_results: Maximum number of results to fetch
-            min_size: Minimum variant size in bp
-            max_size: Maximum variant size in bp
             
         Returns:
             List of variant dictionaries
         """
-        # Build search query
-        search_term = (
-            f'"{chr}"[Chromosome] '
-            f'AND "deletion"[Type of variation]'
-            f'AND "(criteria provided, multiple submitters, no conflicts"[Review status]'
-            f'OR "criteria provided, single submitter"[Review status])'
-        )
-        
-        logger.info(f"Searching dbVar: {search_term}")
-        logger.info(f"Fetching up to {max_results} variants...")
-        
         # Search for variant IDs
         self._rate_limit()
         try:
-            with Entrez.esearch(db="clinVar", term=search_term, retmax=max_results) as stream:
+            with Entrez.esearch(db="clinvar", term=search_term, retmax=max_results) as stream:
                 record = Entrez.read(stream, validate=False, ignore_errors=True)
         except Exception as e:
-            logger.error(f"Error searching dbVar: {e}")
-            raise
+            logger.error(f"Error searching ClinVar: {e}")
+            return []
         
         variant_ids = record.get("IdList", [])
         
         if not variant_ids:
-            logger.warning("No variants found matching search criteria")
+            logger.warning(f"No variants found for term: {search_term}")
             return []
         
-        logger.info(f"Found {len(variant_ids)} variant IDs")
-        logger.info(f"Fetching in batches of {self.BATCH_SIZE}...")
+        logger.info(f"Found {len(variant_ids)} variant IDs, fetching in batches of {self.BATCH_SIZE}...")
         
         # Fetch variants in batches
         all_variants = []
@@ -161,10 +205,8 @@ class ClinVarClient:
             else:
                 logger.warning(f"Batch {batch_num} returned no results")
         
-        logger.info(f"Successfully fetched {len(all_variants)}/{total_ids} variants")
-        
         return all_variants
-    
+        
     def get_variant_stats(self, variants: List[Dict]) -> Dict:
         """Get statistics about fetched variants."""
         if not variants:
