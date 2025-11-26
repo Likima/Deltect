@@ -2,6 +2,17 @@
 
 ## Setup
 
+# Download GTF annotation file (GRCh37/hg19)
+wget ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_19/gencode.v19.annotation.gtf.gz
+gunzip gencode.v19.annotation.gtf.gz
+
+# Run with gene annotations
+uv run main.py --mode both \
+    --bam [file].bam \
+    --chr [chr] --start [start] --end [end] \
+    --reference hs37d5.fa \
+    --gtf gencode.v19.annotation.gtf
+
 ### Prerequisites
 - Git
 - libuv (system library)
