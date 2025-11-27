@@ -2,7 +2,7 @@
 Optimized API client with batch fetching for faster data retrieval.
 """
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict
 from Bio import Entrez
 from dotenv import dotenv_values
 import logging
@@ -34,7 +34,7 @@ class ClinVarClient:
         Entrez.email = self.email
         self._last_request_time = 0
         
-        logger.info(f"Initialized DbVarClient with email: {self.email}")
+        logger.info(f"Initialized ClinVarClient with email: {self.email}")
     
     def _rate_limit(self):
         """Implement rate limiting for API requests."""
@@ -100,20 +100,19 @@ class ClinVarClient:
         chr: str = "22",
         max_results: int = 500
     ) -> List[Dict]:
-        """Fetch deletion variants from ClinVar with 2/3 pathogenic and 1/3 non-pathogenic.
+        """Fetch deletion variants from ClinVar with 50% pathogenic and 1/3 non-pathogenic.
         
         Args:
             chr: Chromosome number
             max_results: Maximum total number of results to fetch
             
         Returns:
-            List of variant dictionaries (2/3 pathogenic, 1/3 non-pathogenic)
+            List of variant dictionaries (50% pathogenic, 50% non-pathogenic)
         """
-        # Calculate split: 2/3 pathogenic, 1/3 non-pathogenic
-        pathogenic_count = int(max_results * 2 / 3)
+        pathogenic_count = int(max_results * 0.5)
         non_pathogenic_count = max_results - pathogenic_count
         
-        logger.info(f"Fetching {pathogenic_count} pathogenic and {non_pathogenic_count} non-pathogenic variants")
+        # logger.info(f"Fetching {pathogenic_count} pathogenic and {non_pathogenic_count} non-pathogenic variants")
         
         # Base search term (common to both)
         base_term = (
@@ -126,27 +125,27 @@ class ClinVarClient:
         # Pathogenic search term
         pathogenic_term = (
             f'{base_term} '
-            f'AND ("pathogenic"[Clinical significance] '
-            f'OR "likely pathogenic"[Clinical significance])'
+            f'AND ("clinsig pathogenic"[Properties] '
+            f'OR "clinsig likely pathogenic"[Properties])'
         )
         
         # Non-pathogenic search term
         non_pathogenic_term = (
             f'{base_term} '
-            f'AND ("benign"[Clinical significance] '
-            f'OR "likely benign"[Clinical significance])'
+            f'AND ("clinsig benign"[Properties] '
+            f'OR "clinsig likely benign"[Properties])'
         )
         
         all_variants = []
         
         # Fetch pathogenic variants
-        logger.info(f"Searching for pathogenic variants: {pathogenic_term}")
+        # logger.info(f"Searching for pathogenic variants: {pathogenic_term}")
         pathogenic_variants = self._fetch_variants_by_term(pathogenic_term, pathogenic_count)
         all_variants.extend(pathogenic_variants)
         logger.info(f"Fetched {len(pathogenic_variants)} pathogenic variants")
         
         # Fetch non-pathogenic variants
-        logger.info(f"Searching for non-pathogenic variants: {non_pathogenic_term}")
+        # logger.info(f"Searching for non-pathogenic variants: {non_pathogenic_term}")
         non_pathogenic_variants = self._fetch_variants_by_term(non_pathogenic_term, non_pathogenic_count)
         all_variants.extend(non_pathogenic_variants)
         logger.info(f"Fetched {len(non_pathogenic_variants)} non-pathogenic variants")
@@ -192,16 +191,16 @@ class ClinVarClient:
             batch_num = (i // self.BATCH_SIZE) + 1
             total_batches = (total_ids + self.BATCH_SIZE - 1) // self.BATCH_SIZE
             
-            logger.info(
-                f"Fetching batch {batch_num}/{total_batches} "
-                f"({len(batch_ids)} variants, {i+len(batch_ids)}/{total_ids} total)"
-            )
+            # logger.info(
+            #     f"Fetching batch {batch_num}/{total_batches} "
+            #     f"({len(batch_ids)} variants, {i+len(batch_ids)}/{total_ids} total)"
+            # )
             
             batch_results = self._fetch_variants_batch(batch_ids)
             
             if batch_results:
                 all_variants.extend(batch_results)
-                logger.info(f"Batch {batch_num} successful ({len(batch_results)} variants)")
+                # logger.info(f"Batch {batch_num} successful ({len(batch_results)} variants)")
             else:
                 logger.warning(f"Batch {batch_num} returned no results")
         
@@ -245,3 +244,13 @@ def fetch_clinvar_deletions_entrez(chrom, max_results=500):
         logger.info(f"  Variant types: {stats['variant_types']}")
     
     return variants
+
+def main():
+    example_clinvar = ClinVarClient()
+    print(f'ClinVar: {example_clinvar.fetch_deletion_variants()[0]}')
+
+
+
+
+if __name__ == "__main__":
+    main()

@@ -31,7 +31,9 @@ class DeletionPathogenicityPredictor:
         self.scaler = RobustScaler()  # More robust to outliers than StandardScaler
         self.label_encoders = {}
         self.feature_columns = None
-        self.categorical_columns = ['gene', 'variant_type', 'consequence', 'condition', 'review_status']
+        # REMOVED: 'condition' and 'consequence' from categorical columns
+        # These are clinical annotations not available from BAM files
+        self.categorical_columns = ['gene', 'variant_type', 'review_status']
         
     def _calculate_sequence_features(self, seq: str) -> dict:
         """Calculate sequence-based features.
@@ -105,60 +107,6 @@ class DeletionPathogenicityPredictor:
             'complexity_score': complexity_score
         }
     
-    def _encode_consequence_severity(self, consequence: str) -> dict:
-        """Encode consequence with severity weighting.
-        
-        Args:
-            consequence: Variant consequence string
-            
-        Returns:
-            Dictionary of consequence features
-        """
-        if not consequence:
-            consequence = 'unknown'
-        
-        consequence = consequence.lower()
-        
-        # Severity scores based on biological impact
-        severity_map = {
-            'frameshift': 1.0,
-            'nonsense': 1.0,
-            'stop_gain': 1.0,
-            'splice_acceptor': 0.95,
-            'splice_donor': 0.95,
-            'splice_site': 0.9,
-            'start_lost': 0.85,
-            'stop_lost': 0.8,
-            'missense': 0.5,
-            'inframe_deletion': 0.6,
-            'inframe_insertion': 0.55,
-            'protein_altering': 0.5,
-            'utr_5': 0.3,
-            'utr_3': 0.25,
-            'intron': 0.2,
-            'upstream': 0.15,
-            'downstream': 0.15,
-            'intergenic': 0.1,
-            'unknown': 0.0
-        }
-        
-        # Find highest matching severity
-        max_severity = 0.0
-        consequence_type = 'unknown'
-        for cons_type, severity in severity_map.items():
-            if cons_type in consequence:
-                if severity > max_severity:
-                    max_severity = severity
-                    consequence_type = cons_type
-        
-        return {
-            'consequence_severity': max_severity,
-            'is_lof': 1.0 if max_severity >= 0.85 else 0.0,  # Loss-of-function
-            'is_coding': 1.0 if max_severity >= 0.4 else 0.0,
-            'is_regulatory': 1.0 if 'utr' in consequence or 'promoter' in consequence else 0.0,
-            'consequence_type': consequence_type
-        }
-    
     def _encode_gene_features(self, gene: str) -> dict:
         """Encode gene-related features.
         
@@ -168,11 +116,13 @@ class DeletionPathogenicityPredictor:
         Returns:
             Dictionary of gene features
         """
-        # Known disease-associated gene patterns (this is a simplified version)
-        # In production, you'd load from a database like OMIM, ClinGen, etc.
+        # Expanded list of known disease-associated genes
+        # In production, load from ClinGen, OMIM, or gene panels
         known_disease_genes = {
             'BRCA1', 'BRCA2', 'TP53', 'PTEN', 'RB1', 'APC', 'MLH1', 'MSH2',
-            'VHL', 'NF1', 'NF2', 'TSC1', 'TSC2', 'ATM', 'CHEK2', 'PALB2'
+            'VHL', 'NF1', 'NF2', 'TSC1', 'TSC2', 'ATM', 'CHEK2', 'PALB2',
+            'CDKN2A', 'STK11', 'CDH1', 'SMAD4', 'BMPR1A', 'MUTYH', 'MSH6',
+            'PMS2', 'EPCAM', 'POLD1', 'POLE', 'RAD51C', 'RAD51D', 'BRIP1'
         }
         
         has_gene = gene and gene != 'N/A' and gene != ''
@@ -180,7 +130,6 @@ class DeletionPathogenicityPredictor:
         # Extract gene symbol if it's an Ensembl ID
         gene_symbol = gene
         if gene and gene.startswith('ENSG'):
-            # Try to extract gene symbol from the full string
             gene_symbol = gene.split('.')[0] if '.' in gene else gene
         
         return {
@@ -211,7 +160,8 @@ class DeletionPathogenicityPredictor:
             'criteria provided, single submitter': 0.5,
             'no assertion criteria provided': 0.2,
             'no assertion provided': 0.1,
-            'conflicting': 0.3
+            'conflicting': 0.3,
+            'from_bam': 0.0  # BAM-extracted variants have no review
         }
         
         for status, confidence in confidence_map.items():
@@ -221,7 +171,10 @@ class DeletionPathogenicityPredictor:
         return 0.0
     
     def _encode_features(self, variants: list, fit: bool = False) -> pd.DataFrame:
-        """Encode variant features for model training/prediction with advanced features.
+        """Encode variant features for model training/prediction.
+        
+        IMPORTANT: This method does NOT use 'consequence' or 'condition' fields
+        since these are clinical annotations unavailable from BAM files.
         
         Args:
             variants: List of variant dictionaries
@@ -267,14 +220,6 @@ class DeletionPathogenicityPredictor:
         )
         df = pd.concat([df, sequence_features], axis=1)
         
-        # Add consequence severity features
-        logger.info("Encoding consequence severity...")
-        consequence_features = df.apply(
-            lambda row: pd.Series(self._encode_consequence_severity(row.get('consequence', ''))),
-            axis=1
-        )
-        df = pd.concat([df, consequence_features], axis=1)
-        
         # Add gene features
         logger.info("Encoding gene features...")
         gene_features = df.apply(
@@ -289,13 +234,13 @@ class DeletionPathogenicityPredictor:
             axis=1
         )
         
-        # Population frequency (if available) - FIX HERE
+        # Population frequency (if available)
         if 'population_af' not in df.columns:
             df['population_af'] = 0.0
         df['population_af'] = pd.to_numeric(df['population_af'], errors='coerce').fillna(0.0)
         df['is_rare'] = (df['population_af'] < 0.01).astype(float)
         
-        # Quality metrics (if available from BAM) - FIX HERE
+        # Quality metrics (if available from BAM)
         if 'mapping_quality' not in df.columns:
             df['mapping_quality'] = 30
         df['mapping_quality'] = pd.to_numeric(df['mapping_quality'], errors='coerce').fillna(30) / 60.0
@@ -332,7 +277,9 @@ class DeletionPathogenicityPredictor:
                     
                     df[f'{col}_encoded'] = df[col].apply(encode_with_unknown)
         
-        # Select all numeric features for model
+        # Select numeric features for model
+        # REMOVED: consequence_severity, is_lof, is_coding, is_regulatory
+        # These depend on 'consequence' field which BAM files don't have
         numeric_features = [
             # Basic position/size features
             'chr',
@@ -345,7 +292,7 @@ class DeletionPathogenicityPredictor:
             'is_medium_del',
             'is_large_del',
             
-            # Sequence features
+            # Sequence features (from reference genome)
             'gc_content',
             'repeat_content',
             'homopolymer_run',
@@ -353,13 +300,7 @@ class DeletionPathogenicityPredictor:
             'at_content',
             'complexity_score',
             
-            # Consequence features
-            'consequence_severity',
-            'is_lof',
-            'is_coding',
-            'is_regulatory',
-            
-            # Gene features
+            # Gene features (from GTF annotation)
             'has_gene',
             'is_known_disease_gene',
             'gene_length',
@@ -380,6 +321,7 @@ class DeletionPathogenicityPredictor:
         # Store feature columns during training
         if fit:
             self.feature_columns = numeric_features
+            logger.info(f"Training features: {', '.join(numeric_features)}")
         
         # Ensure we have the same features as training
         X = df[numeric_features].copy()
@@ -402,6 +344,8 @@ class DeletionPathogenicityPredictor:
             Dictionary with training metrics
         """
         logger.info(f"Training pathogenicity predictor on {len(variants)} variants")
+        logger.info("Note: Model does NOT use 'consequence' or 'condition' fields")
+        logger.info("      This allows prediction on BAM-extracted deletions without clinical annotations")
         
         # Create binary labels
         y = []
@@ -447,6 +391,7 @@ class DeletionPathogenicityPredictor:
         
         # Encode features (fit encoders during training)
         X = self._encode_features(variants, fit=True)
+
         
         logger.info(f"Training with {X.shape[1]} features")
         
@@ -500,7 +445,6 @@ class DeletionPathogenicityPredictor:
         
         # Add XGBoost if available
         if has_xgboost:
-            # Calculate scale_pos_weight for imbalance
             scale_pos_weight = (len(y_train) - sum(y_train)) / sum(y_train) if sum(y_train) > 0 else 1.0
             
             xgb = XGBClassifier(
@@ -517,7 +461,6 @@ class DeletionPathogenicityPredictor:
             )
             estimators.append(('xgb', xgb))
         
-        # Ensemble with soft voting
         self.model = VotingClassifier(
             estimators=estimators,
             voting='soft',
@@ -572,8 +515,8 @@ class DeletionPathogenicityPredictor:
                 zip(self.feature_columns, feature_importance),
                 key=lambda x: x[1],
                 reverse=True
-            )[:10]
-            logger.info("Top 10 most important features:")
+            )[:15]
+            logger.info("Top 15 most important features:")
             for feat, imp in top_features:
                 logger.info(f"  {feat}: {imp:.4f}")
         
@@ -613,6 +556,7 @@ class DeletionPathogenicityPredictor:
         
         logger.info(f"\nTraining Complete:")
         logger.info(f"  Models: {'RF + GB + XGB' if has_xgboost else 'RF + GB'}")
+        logger.info(f"  Features: {X.shape[1]} (genomic + sequence + gene)")
         logger.info(f"  CV Precision: {cv_precision:.3f}, Recall: {cv_recall:.3f}, F1: {cv_f1:.3f}, AUC: {cv_auc:.3f}")
         logger.info(f"  Test Precision: {test_precision:.3f}, Recall: {test_recall:.3f}, F1: {test_f1:.3f}, AUC: {test_auc:.3f}")
         

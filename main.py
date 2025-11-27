@@ -2,7 +2,6 @@
 Main pipeline for fetching and processing genomic variants from ClinVar,
 and training a deletion pathogenicity prediction model.
 """
-from typing import Dict, List
 from data.api import fetch_clinvar_deletions_entrez
 from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
@@ -14,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from data.data_processor import dbvar_to_clinvar_format
 from validation.truvari_validator import TruvariValidator
 
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +28,10 @@ def train_pipeline():
     print("="*70)
     
     # Configuration
-    CHROMOSOMES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]  # Multiple chromosomes
-    MAX_VARIANTS_PER_CHR = 1000
+    # CHROMOSOMES = ["2"]
+    # CHROMOSOMES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+    CHROMOSOMES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"]  # Multiple chromosomes
+    MAX_VARIANTS_PER_CHR = 10000
     TEST_SIZE = 0.2
     CV_FOLDS = 5  # Reduced from 10 for faster training with larger dataset
     SAVE_OUTPUTS = True
@@ -50,9 +52,9 @@ def train_pipeline():
                 max_results=MAX_VARIANTS_PER_CHR
             )
             all_raw_variants.extend(chrom_variants)
-            print(f"✓ {len(chrom_variants)} variants")
+            print(f" {len(chrom_variants)} variants")
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(f" Error: {e}")
             logger.warning(f"Failed to fetch chr{chrom}: {e}")
     
     print(f"\nReceived {len(all_raw_variants)} total deletion variants from ClinVar")
@@ -108,7 +110,7 @@ def train_pipeline():
             processed_variants,
             test_size=TEST_SIZE,
             cv_folds=CV_FOLDS,
-            balance_classes=BALANCE_CLASSES
+            balance_classes=False
         )
         
         print("\n" + "="*70)
@@ -216,23 +218,6 @@ def train_pipeline():
         print("\n" + "="*70)
         print("TRAINING PIPELINE COMPLETE")
         print("="*70)
-        
-        # Print performance summary
-        test_f1 = path_results.get('test_f1', 0)
-        test_auc = path_results.get('test_auc', 0)
-        
-        if test_f1 >= 0.8 and test_auc >= 0.85:
-            print("\n✓ Model performance: EXCELLENT")
-        elif test_f1 >= 0.6 and test_auc >= 0.7:
-            print("\n✓ Model performance: GOOD")
-        elif test_f1 >= 0.4 and test_auc >= 0.6:
-            print("\n⚠ Model performance: ACCEPTABLE")
-        else:
-            print("\n✗ Model performance: NEEDS IMPROVEMENT")
-            print("  Consider:")
-            print("  - Fetching more variants (increase MAX_VARIANTS_PER_CHR)")
-            print("  - Adding more chromosomes")
-            print("  - Checking data quality and feature engineering")
         
         # Return trained model
         return pathogenicity_predictor
@@ -418,17 +403,17 @@ def inference_pipeline(
         print(f"\nSaved results to {output_dir / 'pathogenic_deletions.json'}")
         
         # Step 3: Validate with Truvari if truth VCF provided
-        if truth_vcf:
-            print(f"\n[3/3] Validating predictions with Truvari...")
-            validate_with_truvari(
-                predicted_deletions=results,
-                truth_vcf=truth_vcf,
-                reference_fasta=reference_fasta,
-                output_dir=output_dir / "validation"
-            )
-        else:
-            print("\n[3/3] Skipping validation (no truth VCF provided)")
-            print("  Use --truth-vcf to enable Truvari validation")
+        # if truth_vcf:
+        #     print(f"\n[3/3] Validating predictions with Truvari...")
+        #     validate_with_truvari(
+        #         predicted_deletions=results,
+        #         truth_vcf=truth_vcf,
+        #         reference_fasta=reference_fasta,
+        #         output_dir=output_dir / "validation"
+        #     )
+        # else:
+        #     print("\n[3/3] Skipping validation (no truth VCF provided)")
+        #     print("  Use --truth-vcf to enable Truvari validation")
         
         print("\n" + "="*70)
         print("INFERENCE PIPELINE COMPLETE")
@@ -442,59 +427,6 @@ def inference_pipeline(
         import traceback
         traceback.print_exc()
         return []
-
-
-def validate_with_truvari(
-    predicted_deletions: List[Dict],
-    truth_vcf: str,
-    reference_fasta: str = "hs37d5.fa",
-    output_dir: Path = Path("output/validation")
-) -> Dict:
-    """
-    Validate deletion predictions using Truvari against a truth set.
-    
-    Args:
-        predicted_deletions: List of predicted deletion dictionaries
-        truth_vcf: Path to truth set VCF (e.g., ClinVar, GIAB)
-        reference_fasta: Path to reference genome
-        output_dir: Output directory for validation results
-        
-    Returns:
-        Validation metrics dictionary
-    """
-    print("\n" + "="*70)
-    print("TRUVARI VALIDATION")
-    print("="*70)
-    
-    validator = TruvariValidator(reference_fasta=reference_fasta)
-    
-    try:
-        metrics = validator.validate_predictions(
-            predicted_deletions=predicted_deletions,
-            truth_vcf=Path(truth_vcf),
-            output_dir=output_dir
-        )
-        
-        print("\nTruvari Bench Results:")
-        print(f"  Precision: {metrics['truvari_bench'].get('precision', 0):.4f}")
-        print(f"  Recall: {metrics['truvari_bench'].get('recall', 0):.4f}")
-        print(f"  F1 Score: {metrics['truvari_bench'].get('f1', 0):.4f}")
-        
-        print("\nPathogenicity Analysis:")
-        path_metrics = metrics['pathogenicity_analysis']
-        print(f"  True Positives: {path_metrics['true_positives']}")
-        print(f"  False Positives: {path_metrics['false_positives']}")
-        print(f"  False Negatives: {path_metrics['false_negatives']}")
-        print(f"  Pathogenic TP: {path_metrics['pathogenic_tp']}")
-        print(f"  Pathogenic FP: {path_metrics['pathogenic_fp']}")
-        
-        return metrics
-        
-    except Exception as e:
-        print(f"ERROR during Truvari validation: {e}")
-        logger.error(f"Truvari validation error: {e}", exc_info=True)
-        return {}
-
 
 def main():
     """Main entry point - can run training, inference, or validation."""
@@ -546,6 +478,18 @@ def main():
                 min_mapping_quality=args.min_mapq,
                 truth_vcf=args.truth_vcf
             )
+
+            # validate_with_hg002(
+            #     pathogenicity_predictor=pathogenicity_predictor,
+            #     bam_file=args.bam,
+            #     chromosome=args.chr,
+            #     start=args.start,
+            #     end=args.end,
+            #     reference_fasta=args.reference,
+            #     gene_annotation_gtf=args.gtf,
+            #     min_deletion_size=args.min_del_size,
+            #     min_mapping_quality=args.min_mapq
+            # )
     
     elif args.mode == 'inference':
         print("ERROR: Inference mode requires a trained model")
@@ -565,12 +509,12 @@ def main():
         with open(args.validate_predictions) as f:
             predictions = json.load(f)
         
-        # Run validation
-        validate_with_truvari(
-            predicted_deletions=predictions,
-            truth_vcf=args.truth_vcf,
-            reference_fasta=args.reference
-        )
+        # # Run validation
+        # validate_with_truvari(
+        #     predicted_deletions=predictions,
+        #     truth_vcf=args.truth_vcf,
+        #     reference_fasta=args.reference
+        # )
 
 
 if __name__ == "__main__":

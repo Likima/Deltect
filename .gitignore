@@ -218,6 +218,8 @@ __marimo__/
 
 output/*.json
 
+*.csv
+
 # LaTeX build files
 *.aux
 *.log
