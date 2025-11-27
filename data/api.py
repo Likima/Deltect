@@ -19,7 +19,7 @@ class ClinVarClient:
     RETRY_DELAY = 2
     
     # Batch size for fetching (Entrez allows up to 500 per request)
-    BATCH_SIZE = 200  # Conservative batch size for stability
+    BATCH_SIZE = 200  
     
     def __init__(self, env_file: str = ".env"):
         """Initialize dbVar client."""
@@ -244,13 +244,3 @@ def fetch_clinvar_deletions_entrez(chrom, max_results=500):
         logger.info(f"  Variant types: {stats['variant_types']}")
     
     return variants
-
-def main():
-    example_clinvar = ClinVarClient()
-    print(f'ClinVar: {example_clinvar.fetch_deletion_variants()[0]}')
-
-
-
-
-if __name__ == "__main__":
-    main()
