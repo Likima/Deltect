@@ -1,3 +1,4 @@
+from venv import logger
 from data.api import fetch_clinvar_deletions_entrez
 from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
@@ -5,6 +6,17 @@ from training.model import DeletionPathogenicityPredictor
 import json
 from pathlib import Path
 import pandas as pd
+
+import config
+
+# import hyperparameters
+CHROMOSOMES = config.CHROMOSOMES
+MAX_VARIANTS_PER_CHR = config.MAX_VARIANTS_PER_CHR
+TEST_SIZE = config.TEST_SIZE
+CV_FOLDS = config.CV_FOLDS
+SAVE_OUTPUTS = config.SAVE_OUTPUTS
+REFERENCE_FASTA = config.REFERENCE_FASTA
+BALANCE_CLASSES = config.BALANCE_CLASSES
 
 def train_pipeline():
     """Training pipeline: fetch ClinVar data and train pathogenicity prediction model."""
@@ -16,13 +28,7 @@ def train_pipeline():
     # Configuration
     # CHROMOSOMES = ["2"]
     # CHROMOSOMES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
-    CHROMOSOMES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"]  # Multiple chromosomes
-    MAX_VARIANTS_PER_CHR = 10000
-    TEST_SIZE = 0.2
-    CV_FOLDS = 5  # Reduced from 10 for faster training with larger dataset
-    SAVE_OUTPUTS = True
-    REFERENCE_FASTA = "hs37d5.fa"
-    BALANCE_CLASSES = True
+
     
     # Step 1: Fetch deletion variants from ClinVar
     print(f"\n[1/4] Fetching deletion variants from ClinVar...")

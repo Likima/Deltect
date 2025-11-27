@@ -2,16 +2,10 @@
 Main pipeline for fetching and processing genomic variants from ClinVar,
 and training a deletion pathogenicity prediction model.
 """
-from extraction.deletion_extraction import DeletionExtractor
-from training.model import DeletionPathogenicityPredictor
-import json
 import logging
-from pathlib import Path
-import numpy as np
 
 from utils.pipelines import inference_pipeline
 from utils.pipelines.training_pipeline import train_pipeline
-from validation.truvari_validator import TruvariValidator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,14 +23,14 @@ def main():
     parser.add_argument('--start', type=int, default=1000000, help='Start position')
     parser.add_argument('--end', type=int, default=2000000, help='End position')
     parser.add_argument('--reference', type=str, default='hs37d5.fa', help='Reference genome')
-    parser.add_argument('--gtf', type=str, help='Gene annotation GTF file (e.g., gencode.v19.annotation.gtf)')
+    # parser.add_argument('--gtf', type=str, help='Gene annotation GTF file (e.g., gencode.v19.annotation.gtf)')
     parser.add_argument('--min-del-size', type=int, default=1, help='Minimum deletion size (bp)')
     parser.add_argument('--min-mapq', type=int, default=20, help='Minimum mapping quality')
     
-    parser.add_argument('--truth-vcf', type=str, 
-                       help='Truth set VCF for Truvari validation (e.g., GIAB, ClinVar)')
-    parser.add_argument('--validate-predictions', type=str,
-                       help='JSON file with predictions to validate')
+    # parser.add_argument('--truth-vcf', type=str, 
+    #                    help='Truth set VCF for Truvari validation (e.g., GIAB, ClinVar)')
+    # parser.add_argument('--validate-predictions', type=str,
+    #                    help='JSON file with predictions to validate')
     
     args = parser.parse_args()
     
@@ -94,17 +88,6 @@ def main():
             print("ERROR: --validate-predictions required for validation mode")
             return
         
-        # Load predictions
-        with open(args.validate_predictions) as f:
-            predictions = json.load(f)
-        
-        # # Run validation
-        # validate_with_truvari(
-        #     predicted_deletions=predictions,
-        #     truth_vcf=args.truth_vcf,
-        #     reference_fasta=args.reference
-        # )
-
 
 if __name__ == "__main__":
     main()
