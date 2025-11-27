@@ -23,7 +23,7 @@ def main():
     parser.add_argument('--start', type=int, default=1000000, help='Start position')
     parser.add_argument('--end', type=int, default=2000000, help='End position')
     parser.add_argument('--reference', type=str, default='hs37d5.fa', help='Reference genome')
-    # parser.add_argument('--gtf', type=str, help='Gene annotation GTF file (e.g., gencode.v19.annotation.gtf)')
+    parser.add_argument('--gtf', type=str, help='Gene annotation GTF file (e.g., gencode.v19.annotation.gtf)')
     parser.add_argument('--min-del-size', type=int, default=1, help='Minimum deletion size (bp)')
     parser.add_argument('--min-mapq', type=int, default=20, help='Minimum mapping quality')
     
@@ -59,7 +59,6 @@ def main():
                 gene_annotation_gtf=args.gtf,
                 min_deletion_size=args.min_del_size,
                 min_mapping_quality=args.min_mapq,
-                truth_vcf=args.truth_vcf
             )
 
             # validate_with_hg002(

@@ -21,7 +21,6 @@ def inference_pipeline(
     output_dir: Path = Path("output"),
     min_deletion_size: int = 1,
     min_mapping_quality: int = 20,
-    truth_vcf: str = None
 ):
     """Inference pipeline: analyze BAM file region for pathogenic deletions.
     

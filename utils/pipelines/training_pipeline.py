@@ -97,7 +97,6 @@ def train_pipeline():
     pathogenicity_predictor = DeletionPathogenicityPredictor(threshold=0.5)
     
     try:
-        # Train on deletion variants with improved model
         path_results = pathogenicity_predictor.train(
             processed_variants,
             test_size=TEST_SIZE,
