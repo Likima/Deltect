@@ -23,6 +23,12 @@ for chrom in chromosomes:
     )
     search_term2 = (f'"{chrom}"[Chromosome] AND "deletion"[Type of variation]'
                     f' AND ("clinsig benign"[Properties] OR "clinsig likely benign"[Properties])')
+
+    # search_term1 = (f'"{chrom}"[Chr] AND "deletion"[Variant Type]'
+    #                f' AND ("pathogenic"[Clinical Interpretation] OR "likely pathogenic"[Clinical Interpretation])' 
+    # )
+    # search_term2 = (f'"{chrom}"[Chr] AND "deletion"[Variant Type]'
+    #                 f' AND ("benign"[Clinical Interpretation] OR "likely benign"[Clinical Interpretation])')
     
     # print(search_term)
 
