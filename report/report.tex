@@ -1,6 +1,7 @@
 \documentclass[12pt, letterpaper]{article}
 \usepackage[margin=1in]{geometry}
-
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=1pt, topsep=2pt, parsep=1pt, partopsep=2pt} % for list
 \usepackage{graphicx}
 
 \title{
@@ -30,33 +31,109 @@
             train a classifier than can estimate a patient's genomic data through BAM/CRAM files, and classify if a
             deletion is pathogenic. 
 
-        \subsection{Methodology}
-            Our methodology for our AI model is based on a system with two main components:
-            \begin{itemize}
-                \item[1.] \textbf{Deletion Extractor} \\
-                    Identifies deletions from analyzing a BAM's CIGAR strings. (should this be included? probs not right because there is inference)
-                \item[2.] \textbf{Pathogenic Predictor} \\
-                    A supervised learning model trained on ClinVar deletion variants to predict the pathogenicity
-                    of these deletions extracted from the Deletion Extractor. 
-            \end{itemize} 
 
+        \subsection{Methodology}
+            Our methodology involves supervised learning trained on ClinVar deletion variants and HG002 to predict the pathogenicity
+            We use Sci-kit learn's Random Forest Classifier
+
+        \vspace{12pt}
+        \subsubsection{Data Aquisition}
+            We extract deletion variants to train our model from 2 main sources:
+
+            \begin{itemize}
+                \item[1.] \textbf{ClinVar} to extract deletions that are pathogenic
+                \item[2.] \textbf{HG002/1000 Genomes Project} that are benign or uncertain
+            \end{itemize}
+            
+            \noindent
+            To gather ClinVar data, we use the NCBI Entrez API via Biopython, restricitng our query to deletions on selected chromosomes
+            at a time \textbf{TODO: chosen chromosome explain later which one}.
+
+            \vspace{20pt}
+            \noindent
+            \textbf{Rationale for Using Only Pathogenic ClinVar Variants}
+            \vspace{6pt}
+
+            \noindent
+            Although ClinVar contains both pathogenic and benign classifications, we intentionally restricted it to pathogenic deletions.
+            This decision was driven by the composition of the HG002 dataset, where there consists a large volume of benign/likely benign/
+            uncertain deletions. When combined with ClinVar's full datasets, benign samples dominated having 22\% of the
+            training samples that are pathogenic. 
+
+            \vspace{20pt}
+            \noindent
+            While the model's benign predictions were high, this imbalance led to a lower recall performance. In a medical context, recall
+            is especially critical because false negatives correspond to pathogenic deletions being incorrectly classified as benign, which
+            is what we would want the least to occur. 
+
+            \vspace{12pt}
+            \noindent
+            \textbf{Mitigating Class Imbalance}
+            \vspace{6pt}
+
+            \noindent
+            To address this issue of a lower recall performance, we balanced the training set of 10,000 deletions with:
+            \begin{itemize}
+                \item 5,000 pathogenic deletions (from ClinVar)
+                \item 5,000 benign or uncertain deletions (from HG002)
+            \end{itemize}
+            This balance ensures that the model avoids majority class bias, and improves sensitivity to pathogenic variants.
+            
+        \vspace{12pt}
         \subsubsection{Feature Engineering}
             For each deletion variant, we construct a set of features based on its position and annotations:
+            
+            \noindent
+            Numerical features:
             \begin{itemize}
-                \item Chromosome Number
-                \item Start and end points ..... continue this 
+                \item Chromosome number
+                \item Chromosome start 
+                \item Chromosome end
+                \item Chromosome position 
             \end{itemize}
-            - talk about categorical features and standardized to adhere to numeric feature vector consistency.
-            - mention LabelEncoder and StandardScaler
+            
+            \textbf{TODO: talk about categorical features and standardized to adhere to numeric feature vector consistency.
+            mention LabelEncoder and StandardScaler}.
 
+            \noindent
+            Categorical features:
+            \begin{itemize}
+                \item Gene
+                \item Variant type
+                \item Consequence
+                \item Condition
+                \item Review Status
+            \end{itemize}
+
+        \vspace{12pt}
         \subsubsection{ML Model Choice and Training}
-            We used Sci-kit Learn's Random Forest Classifier to predict pathogenicity.
+            We implemented a Random Forest Classifier using Skikit-Learn to predict deletion pathogenicity.
+            Random Forests are well-suited for this task because:
+            \begin{itemize}
+                \item they handle mixed feature types such as numerical + categorical
+                \item they model non-linear relationships between features
+                \item they are robust to noise and variability in biological labels
+                \item they provide feature importance scores and \textbf{probability??? to polish}
+            \end{itemize}
 
+            \vspace{12pt}
+            \noindent
+            We performed iterative hyperparameter tuning to identify the configuration that yielded the 
+            best performance. The key hyperparameters tuned include:
+            \begin{itemize}
+                \item class\_weight
+            \end{itemize}
+            \noindent
+            The final selected configuration produced the strongest performance on the hold-out test set. 
+            
+        
+        \vspace{12pt}
         \subsubsection{Testing}
             We split 80\% of the dataset for training and 20\% for testing. We perform 10-fold cross validation 
             on the training set to esitmate the performance of our model. We evaluate the model using mean squared error
             (MSE) on the predictions, and as well as precision, recall, and specificity. 
 
+        \vspace{12pt}
         \subsection{AI Pipeline}
             Our system can be viewed as an end-to-end AI pipeline with two main stages:
             \begin{itemize}
@@ -65,6 +142,8 @@
                 \item[2.] \textbf{Inference} \\
                     The trained predictor, is reused during inference on deletions extracted from BAM files.
             \end{itemize} 
+
+            *** Insert the pipeline diagram here 
 
             \textbf{Training Pipeline}
 
@@ -78,9 +157,10 @@
             \hline
             \textbf{Description} & \textbf{Platform} & \textbf{Completeness} & \textbf{Code} & \textbf{Authors(s)} & \textbf{Notes} \\ 
             \hline
-            Random Forest Regressor & Python \\
+            Random Forest Classifier & Python \\
             \hline
-            BAM extraction
+            BAM extraction \\
+            \hline
         \end{tabular}
 
     \section{External Tools \& Libraries (1/2 page)}
