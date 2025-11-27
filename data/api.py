@@ -65,7 +65,7 @@ class ClinVarClient:
         
         for attempt in range(self.RETRY_ATTEMPTS):
             try:
-                with Entrez.esummary(db="clinVar", id=id_string, rettype="xml") as stream:
+                with Entrez.esummary(db="clinvar", id=id_string, rettype="xml") as stream:
                     # Entrez.read returns a list when fetching multiple IDs
                     results = Entrez.read(stream, validate=False, ignore_errors=True)
                 
@@ -118,8 +118,10 @@ class ClinVarClient:
         base_term = (
             f'"{chr}"[Chromosome] '
             f'AND "deletion"[Type of variation] '
-            f'AND ("criteria provided, multiple submitters, no conflicts"[Review status] '
-            f'OR "criteria provided, single submitter"[Review status])'
+            # f'AND ("criteria provided, multiple submitters, no conflicts"[Review status] '
+            # f'OR "criteria provided, single submitter"[Review status] '
+            # f'OR "criteria provided, conflicting classifications[Review status] '
+            # f'OR "reviewed by expert panel[Review status])'
         )
         
         # Pathogenic search term

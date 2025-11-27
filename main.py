@@ -4,7 +4,7 @@ and training a deletion pathogenicity prediction model.
 """
 import logging
 
-from utils.pipelines import inference_pipeline
+from utils.pipelines.inferring_pipeline import inference_pipeline
 from utils.pipelines.training_pipeline import train_pipeline
 
 logging.basicConfig(level=logging.INFO)
