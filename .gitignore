@@ -217,6 +217,7 @@ __marimo__/
 *.json
 
 output/*.json
+output/*.csv
 
 *.csv
 
