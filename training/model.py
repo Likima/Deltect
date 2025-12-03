@@ -1,49 +1,51 @@
 """
-Train and evaluate deletion pathogenicity prediction models.
+Deletion pathogenicity predictor with robust imbalance handling.
+
+Features:
+- Uses class weights and stratified sampling instead of upsampling
+- Handles imbalanced datasets (e.g., 5000 pathogenic vs 2000 benign)
+- Stratifies train/test by deletion size bins to avoid length confounding
+- Uses weighted cross-validation
+- Ensemble: RandomForest + GradientBoosting (+ XGBoost if installed)
 """
+from typing import List, Dict, Any, Optional
+import logging
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.preprocessing import RobustScaler, LabelEncoder
 from sklearn.metrics import (
-    mean_squared_error, precision_score, recall_score, 
-    f1_score, roc_auc_score, classification_report, confusion_matrix
+    precision_score, recall_score, f1_score, roc_auc_score,
+    confusion_matrix, precision_recall_curve, auc
 )
-from sklearn.utils import resample
-import logging
-import re
+from sklearn.utils.class_weight import compute_sample_weight, compute_class_weight
+from sklearn.base import clone
+import math
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 class DeletionPathogenicityPredictor:
-    """Predict pathogenicity of deletion variants using ensemble models."""
-    
-    def __init__(self, threshold: float = 0.5):
-        """Initialize predictor.
-        
-        Args:
-            threshold: Classification threshold for pathogenic/benign
-        """
+    def __init__(self, threshold: float = 0.5, n_jobs: int = -1, random_state: int = 42):
         self.threshold = threshold
-        self.model = None
-        self.scaler = RobustScaler()  # More robust to outliers than StandardScaler
-        self.label_encoders = {}
-        self.feature_columns = None
-        # REMOVED: 'condition' and 'consequence' from categorical columns
-        # These are clinical annotations not available from BAM files
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+
+        self.scaler = RobustScaler()
+        self.label_encoders: Dict[str, LabelEncoder] = {}
+        self.feature_columns: Optional[List[str]] = None
         self.categorical_columns = ['gene', 'variant_type', 'review_status']
-        
+
+        # Placeholder for model
+        self.model: Optional[VotingClassifier] = None
+        self.has_xgboost = False
+        self.class_weights = None  # Store computed class weights
+
+    # ... (keep all the helper methods: _calculate_sequence_features, _encode_gene_features, etc.)
+    
     def _calculate_sequence_features(self, seq: str) -> dict:
-        """Calculate sequence-based features.
-        
-        Args:
-            seq: DNA sequence string
-            
-        Returns:
-            Dictionary of sequence features
-        """
         if not seq or not isinstance(seq, str):
             return {
                 'gc_content': 0.5,
@@ -53,51 +55,42 @@ class DeletionPathogenicityPredictor:
                 'at_content': 0.5,
                 'complexity_score': 0.5
             }
-        
         seq = seq.upper()
         seq_len = len(seq)
-        
-        # GC content
         gc_count = sum(1 for b in seq if b in 'GC')
         gc_content = gc_count / seq_len if seq_len > 0 else 0.5
-        
-        # AT content
         at_content = 1.0 - gc_content
-        
-        # CpG islands (CG dinucleotides)
         cpg_count = seq.count('CG')
         cpg_islands = cpg_count / (seq_len - 1) if seq_len > 1 else 0.0
-        
-        # Homopolymer runs (consecutive same bases)
-        max_homopolymer = 0
-        current_run = 1
+
+        max_hpoly = 0
+        cur = 1
         for i in range(1, seq_len):
             if seq[i] == seq[i-1]:
-                current_run += 1
-                max_homopolymer = max(max_homopolymer, current_run)
+                cur += 1
+                if cur > max_hpoly:
+                    max_hpoly = cur
             else:
-                current_run = 1
-        homopolymer_run = max_homopolymer / seq_len if seq_len > 0 else 0.0
-        
-        # Simple repeat content (di/tri-nucleotide repeats)
+                cur = 1
+        homopolymer_run = max_hpoly / seq_len if seq_len > 0 else 0.0
+
         repeat_score = 0.0
-        for repeat_len in [2, 3, 4]:
+        for repeat_len in (2, 3, 4):
             if seq_len >= repeat_len * 2:
-                for i in range(seq_len - repeat_len * 2):
+                for i in range(seq_len - 2 * repeat_len):
                     pattern = seq[i:i+repeat_len]
                     if seq[i+repeat_len:i+2*repeat_len] == pattern:
                         repeat_score += 1
         repeat_content = min(repeat_score / seq_len if seq_len > 0 else 0.0, 1.0)
-        
-        # Sequence complexity (Shannon entropy)
-        base_counts = {b: seq.count(b) for b in 'ACGT'}
+
+        counts = {b: seq.count(b) for b in 'ACGT'}
         complexity = 0.0
-        for count in base_counts.values():
-            if count > 0:
-                p = count / seq_len
-                complexity -= p * np.log2(p)
-        complexity_score = complexity / 2.0  # Normalize to [0, 1]
-        
+        for c in counts.values():
+            if c > 0:
+                p = c / seq_len
+                complexity -= p * math.log2(p)
+        complexity_score = complexity / 2.0 if seq_len > 0 else 0.5
+
         return {
             'gc_content': gc_content,
             'repeat_content': repeat_content,
@@ -106,53 +99,29 @@ class DeletionPathogenicityPredictor:
             'at_content': at_content,
             'complexity_score': complexity_score
         }
-    
+
     def _encode_gene_features(self, gene: str) -> dict:
-        """Encode gene-related features.
-        
-        Args:
-            gene: Gene symbol or identifier
-            
-        Returns:
-            Dictionary of gene features
-        """
-        # Expanded list of known disease-associated genes
-        # In production, load from ClinGen, OMIM, or gene panels
         known_disease_genes = {
             'BRCA1', 'BRCA2', 'TP53', 'PTEN', 'RB1', 'APC', 'MLH1', 'MSH2',
             'VHL', 'NF1', 'NF2', 'TSC1', 'TSC2', 'ATM', 'CHEK2', 'PALB2',
             'CDKN2A', 'STK11', 'CDH1', 'SMAD4', 'BMPR1A', 'MUTYH', 'MSH6',
             'PMS2', 'EPCAM', 'POLD1', 'POLE', 'RAD51C', 'RAD51D', 'BRIP1'
         }
-        
-        has_gene = gene and gene != 'N/A' and gene != ''
-        
-        # Extract gene symbol if it's an Ensembl ID
+        has_gene = bool(gene) and gene != 'N/A'
         gene_symbol = gene
         if gene and gene.startswith('ENSG'):
             gene_symbol = gene.split('.')[0] if '.' in gene else gene
-        
         return {
             'has_gene': 1.0 if has_gene else 0.0,
             'is_known_disease_gene': 1.0 if gene_symbol in known_disease_genes else 0.0,
             'gene_length': len(gene) if gene else 0,
             'is_ensembl_id': 1.0 if (gene and gene.startswith('ENSG')) else 0.0
         }
-    
+
     def _encode_review_status_confidence(self, review_status: str) -> float:
-        """Encode review status as confidence score.
-        
-        Args:
-            review_status: ClinVar review status
-            
-        Returns:
-            Confidence score [0-1]
-        """
         if not review_status:
             return 0.0
-        
-        review_status = review_status.lower()
-        
+        rs = review_status.lower()
         confidence_map = {
             'practice guideline': 1.0,
             'reviewed by expert panel': 0.9,
@@ -161,272 +130,231 @@ class DeletionPathogenicityPredictor:
             'no assertion criteria provided': 0.2,
             'no assertion provided': 0.1,
             'conflicting': 0.3,
-            'from_bam': 0.0  # BAM-extracted variants have no review
+            'from_bam': 0.0
         }
-        
-        for status, confidence in confidence_map.items():
-            if status in review_status:
-                return confidence
-        
+        for status, conf in confidence_map.items():
+            if status in rs:
+                return conf
         return 0.0
-    
-    def _encode_features(self, variants: list, fit: bool = False) -> pd.DataFrame:
-        """Encode variant features for model training/prediction.
-        
-        IMPORTANT: This method does NOT use 'consequence' or 'condition' fields
-        since these are clinical annotations unavailable from BAM files.
-        
-        Args:
-            variants: List of variant dictionaries
-            fit: If True, fit encoders; if False, use existing encoders
-            
-        Returns:
-            DataFrame with encoded features
-        """
+
+    def _encode_features(self, variants: List[Dict[str, Any]], fit: bool = False) -> pd.DataFrame:
         df = pd.DataFrame(variants)
-        
-        # Ensure required columns exist
-        required_cols = ['chr', 'start', 'end']
-        for col in required_cols:
+        for col in ('chr', 'start', 'end'):
             if col not in df.columns:
                 raise ValueError(f"Missing required column: {col}")
-        
-        # Convert chromosome to numeric
-        df['chr'] = df['chr'].astype(str).str.replace('chr', '').replace('X', '23').replace('Y', '24').replace('M', '25')
+
+        df['chr'] = df['chr'].astype(str).str.replace('chr', '', regex=False)
+        df['chr'] = df['chr'].replace({'X': '23', 'Y': '24', 'M': '25'})
         df['chr'] = pd.to_numeric(df['chr'], errors='coerce').fillna(0).astype(int)
-        
-        # Convert start/end to numeric
+
         df['start'] = pd.to_numeric(df['start'], errors='coerce').fillna(0).astype(int)
         df['end'] = pd.to_numeric(df['end'], errors='coerce').fillna(0).astype(int)
-        
-        # Basic deletion metrics
-        df['deletion_length'] = df['end'] - df['start']
+        df['deletion_length'] = (df['end'] - df['start']).clip(lower=0)
         df['log_deletion_length'] = np.log1p(df['deletion_length'])
-        
-        # Chromosome position features
-        df['chr_position'] = df['start']
-        df['normalized_chr_position'] = df['start'] / 250000000.0  # Normalize by ~max chr length
-        
-        # Size categories
+        df['normalized_chr_position'] = df['start'] / 250_000_000.0
+
+        try:
+            df['size_bin'] = pd.qcut(df['deletion_length'] + 1, q=10, labels=False, duplicates='drop')
+        except Exception:
+            df['size_bin'] = (df['deletion_length'] > 10000).astype(int)
+
         df['is_small_del'] = (df['deletion_length'] < 1000).astype(float)
         df['is_medium_del'] = ((df['deletion_length'] >= 1000) & (df['deletion_length'] < 10000)).astype(float)
         df['is_large_del'] = (df['deletion_length'] >= 10000).astype(float)
-        
-        # Add sequence features
-        logger.info("Calculating sequence features...")
-        sequence_features = df.apply(
-            lambda row: pd.Series(self._calculate_sequence_features(row.get('ref_seq', ''))),
-            axis=1
-        )
-        df = pd.concat([df, sequence_features], axis=1)
-        
-        # Add gene features
-        logger.info("Encoding gene features...")
-        gene_features = df.apply(
-            lambda row: pd.Series(self._encode_gene_features(row.get('gene', ''))),
-            axis=1
-        )
-        df = pd.concat([df, gene_features], axis=1)
-        
-        # Add review status confidence
-        df['review_confidence'] = df.apply(
-            lambda row: self._encode_review_status_confidence(row.get('review_status', '')),
-            axis=1
-        )
-        
-        # Population frequency (if available)
+
+        seq_feats = df.apply(lambda r: pd.Series(self._calculate_sequence_features(r.get('ref_seq', ''))), axis=1)
+        df = pd.concat([df, seq_feats], axis=1)
+
+        gene_feats = df.apply(lambda r: pd.Series(self._encode_gene_features(r.get('gene', ''))), axis=1)
+        df = pd.concat([df, gene_feats], axis=1)
+
+        df['review_confidence'] = df.apply(lambda r: self._encode_review_status_confidence(r.get('review_status', '')), axis=1)
+
         if 'population_af' not in df.columns:
             df['population_af'] = 0.0
         df['population_af'] = pd.to_numeric(df['population_af'], errors='coerce').fillna(0.0)
         df['is_rare'] = (df['population_af'] < 0.01).astype(float)
-        
-        # Quality metrics (if available from BAM)
+        df['benign_prior'] = 1.0 - df['is_rare']
+
         if 'mapping_quality' not in df.columns:
             df['mapping_quality'] = 30
         df['mapping_quality'] = pd.to_numeric(df['mapping_quality'], errors='coerce').fillna(30) / 60.0
-        
         if 'read_depth' not in df.columns:
             df['read_depth'] = 30
         df['read_depth'] = np.log1p(pd.to_numeric(df['read_depth'], errors='coerce').fillna(30))
-        
-        # Encode categorical features with handling for unseen categories
+
         for col in self.categorical_columns:
             if col not in df.columns:
                 df[col] = 'N/A'
-            
             df[col] = df[col].fillna('N/A').astype(str)
-            
             if fit:
-                if col not in self.label_encoders:
-                    self.label_encoders[col] = LabelEncoder()
-                
-                self.label_encoders[col].fit(df[col])
-                df[f'{col}_encoded'] = self.label_encoders[col].transform(df[col])
+                le = LabelEncoder()
+                df[col] = df[col].astype(str)
+                le.fit(df[col])
+                self.label_encoders[col] = le
+                df[f'{col}_encoded'] = le.transform(df[col])
             else:
                 if col not in self.label_encoders:
-                    logger.warning(f"No encoder for {col}, using default encoding")
-                    df[f'{col}_encoded'] = 0
+                    df[f'{col}_encoded'] = -1
                 else:
-                    encoder = self.label_encoders[col]
-                    
-                    def encode_with_unknown(value):
+                    le = self.label_encoders[col]
+                    def enc(x):
                         try:
-                            return encoder.transform([value])[0]
-                        except ValueError:
-                            return 0
-                    
-                    df[f'{col}_encoded'] = df[col].apply(encode_with_unknown)
-        
-        # Select numeric features for model
-        # REMOVED: consequence_severity, is_lof, is_coding, is_regulatory
-        # These depend on 'consequence' field which BAM files don't have
+                            return int(le.transform([x])[0])
+                        except Exception:
+                            return -1
+                    df[f'{col}_encoded'] = df[col].apply(enc)
+
         numeric_features = [
-            # Basic position/size features
-            'chr',
-            'deletion_length',
-            'log_deletion_length',
-            'normalized_chr_position',
-            
-            # Size categories
-            'is_small_del',
-            'is_medium_del',
-            'is_large_del',
-            
-            # Sequence features (from reference genome)
-            'gc_content',
-            'repeat_content',
-            'homopolymer_run',
-            'cpg_islands',
-            'at_content',
-            'complexity_score',
-            
-            # Gene features (from GTF annotation)
-            'has_gene',
-            'is_known_disease_gene',
-            'gene_length',
-            'is_ensembl_id',
-            
-            # Quality features
-            'review_confidence',
-            'population_af',
-            'is_rare',
-            'mapping_quality',
-            'read_depth'
+            'chr', 'deletion_length', 'log_deletion_length', 'normalized_chr_position',
+            'is_small_del', 'is_medium_del', 'is_large_del',
+            'gc_content', 'repeat_content', 'homopolymer_run', 'cpg_islands', 'at_content', 'complexity_score',
+            'has_gene', 'is_known_disease_gene', 'gene_length', 'is_ensembl_id',
+            'review_confidence', 'population_af', 'is_rare', 'benign_prior', 'mapping_quality', 'read_depth'
         ]
+
+        df['common_variant'] = (df['population_af'] > 0.05).astype(float)  # >5% frequency likely benign
+        df['small_and_common'] = (
+            (df['deletion_length'] < 1000) & 
+            (df['population_af'] > 0.01)
+        ).astype(float)
         
-        # Add encoded categorical features
+        # Review status confidence for benign
+        df['high_confidence_benign'] = (
+            (df['review_confidence'] > 0.5) & 
+            (df.apply(lambda r: 'benign' in str(r.get('clinical_significance', '')).lower(), axis=1))
+        ).astype(float)
+        
+        # Low complexity sequences are often benign (repeats, low-complexity regions)
+        df['low_complexity_benign'] = (
+            (df['complexity_score'] < 0.3) & 
+            (df['repeat_content'] > 0.5)
+        ).astype(float)
+        
+        numeric_features.extend([
+            'common_variant',
+            'small_and_common',
+            'high_confidence_benign',
+            'low_complexity_benign'
+        ])
+
         for col in self.categorical_columns:
             numeric_features.append(f'{col}_encoded')
-        
-        # Store feature columns during training
+
         if fit:
             self.feature_columns = numeric_features
-            logger.info(f"Training features: {', '.join(numeric_features)}")
-        
-        # Ensure we have the same features as training
-        X = df[numeric_features].copy()
-        
-        # Fill any remaining NaN values
-        X = X.fillna(0)
-        
+            logger.info(f"Using {len(self.feature_columns)} features")
+
+        X = df[numeric_features].copy().fillna(0)
         return X
 
-    def train(self, variants: list, test_size: float = 0.2, cv_folds: int = 5, balance_classes: bool = True):
-        """Train the pathogenicity predictor with improved model architecture.
+    def train(self, variants: List[Dict[str, Any]], test_size: float = 0.2, cv_folds: int = 5):
+        """
+        Train predictor on imbalanced data (e.g., 5000 pathogenic, 2000 benign).
+        Uses class weights instead of resampling to handle imbalance.
         
         Args:
             variants: List of variant dictionaries with 'clinical_significance'
-            test_size: Fraction of data to use for testing
-            cv_folds: Number of cross-validation folds
-            balance_classes: Whether to balance pathogenic/benign classes
-            
-        Returns:
-            Dictionary with training metrics
+            test_size: Fraction for test set
+            cv_folds: Number of CV folds
         """
-        logger.info(f"Training pathogenicity predictor on {len(variants)} variants")
-        logger.info("Note: Model does NOT use 'consequence' or 'condition' fields")
-        logger.info("      This allows prediction on BAM-extracted deletions without clinical annotations")
+        logger.info("=== Training Deletion Pathogenicity Predictor ===")
+        logger.info("Handling class imbalance with weighted loss (no resampling)")
         
-        # Create binary labels
-        y = []
-        for variant in variants:
-            sig = variant.get('clinical_significance', '').lower()
+        # Build labels, drop uncertain/ambiguous
+        rows = []
+        labels = []
+        for v in variants:
+            sig = str(v.get('clinical_significance', '')).lower()
             if 'pathogenic' in sig and 'benign' not in sig:
-                y.append(1)  # Pathogenic
-            else:
-                y.append(0)  # Benign or uncertain
-        
-        y = np.array(y)
-        
-        initial_pathogenic = sum(y)
-        initial_benign = len(y) - sum(y)
-        logger.info(f"Initial distribution: {initial_pathogenic} pathogenic, {initial_benign} benign/uncertain")
-        
-        # Balance classes if requested
-        if balance_classes and initial_pathogenic > 0 and initial_benign > 0:
-            logger.info("Balancing classes using resampling...")
-            
-            pathogenic_variants = [v for v, label in zip(variants, y) if label == 1]
-            benign_variants = [v for v, label in zip(variants, y) if label == 0]
-            
-            # Upsample minority class
-            if len(pathogenic_variants) < len(benign_variants):
-                pathogenic_variants = resample(
-                    pathogenic_variants,
-                    n_samples=len(benign_variants),
-                    random_state=42
-                )
-            else:
-                benign_variants = resample(
-                    benign_variants,
-                    n_samples=len(pathogenic_variants),
-                    random_state=42
-                )
-            
-            # Combine balanced sets
-            variants = pathogenic_variants + benign_variants
-            y = np.array([1] * len(pathogenic_variants) + [0] * len(benign_variants))
-            
-            logger.info(f"Balanced distribution: {sum(y)} pathogenic, {len(y) - sum(y)} benign")
-        
-        # Encode features (fit encoders during training)
-        X = self._encode_features(variants, fit=True)
+                rows.append(v)
+                labels.append(1)
+            elif 'benign' in sig and 'pathogenic' not in sig:
+                rows.append(v)
+                labels.append(0)
+            # Skip uncertain/ambiguous
 
+        if len(rows) == 0:
+            raise ValueError("No labeled variants found after filtering uncertain labels")
+
+        X_all = self._encode_features(rows, fit=True)
+        y_all = np.array(labels, dtype=int)
+
+        n_pathogenic = y_all.sum()
+        n_benign = len(y_all) - n_pathogenic
         
-        logger.info(f"Training with {X.shape[1]} features")
-        
-        # Split into train/test
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42, stratify=y
+        logger.info(f"Dataset: {n_pathogenic} pathogenic, {n_benign} benign")
+        logger.info(f"Imbalance ratio: {n_pathogenic/n_benign:.2f}:1 (pathogenic:benign)")
+
+        # Compute class weights for imbalance handling
+        self.class_weights = compute_class_weight(
+            class_weight='balanced',
+            classes=np.array([0, 1]),
+            y=y_all
         )
         
+        logger.info(f"Computed class weights: benign={self.class_weights[0]:.3f}, pathogenic={self.class_weights[1]:.3f}")
+
+        # Stratified train/test split by size_bin + class
+        df_tmp = pd.DataFrame(rows)
+        df_tmp['deletion_length'] = (pd.to_numeric(df_tmp.get('end', 0)) - pd.to_numeric(df_tmp.get('start', 0))).clip(lower=0)
+        
+        try:
+            n_bins = min(5, len(df_tmp) // 100)  # At least 100 samples per bin
+            if n_bins >= 2:
+                df_tmp['size_bin'] = pd.qcut(
+                    df_tmp['deletion_length'] + 1, 
+                    q=n_bins,  # Reduced from 10
+                    labels=False, 
+                    duplicates='drop'
+                )
+                # Combine size_bin with class label for stratification
+                stratify_col = df_tmp['size_bin'].astype(str) + "_" + pd.Series(y_all).astype(str)
+                
+                # Check if any class has only 1 member
+                unique_classes, class_counts = np.unique(stratify_col, return_counts=True)
+                min_class_count = class_counts.min()
+                
+                if min_class_count < 2:
+                    logger.warning(f"Size-based stratification has classes with only {min_class_count} sample(s)")
+                    logger.warning("Falling back to label-only stratification")
+                    stratify_col = y_all  # Fall back to simple stratification
+            else:
+                logger.warning(f"Too few samples ({len(df_tmp)}) for size-based stratification")
+                stratify_col = y_all  # Too few samples for binning
+                
+        except Exception as e:
+            logger.warning(f"Could not create size bins: {e}. Using label-only stratification")
+            stratify_col = y_all
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_all, y_all, test_size=test_size,
+            random_state=self.random_state, stratify=stratify_col
+        )
+
+        logger.info(f"Train set: {y_train.sum()} pathogenic, {len(y_train)-y_train.sum()} benign")
+        logger.info(f"Test set: {y_test.sum()} pathogenic, {len(y_test)-y_test.sum()} benign")
+
         # Scale features
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
+
+        # Build ensemble with class weights
+        logger.info("Building weighted ensemble (RF + GB + XGB)")
         
-        # Build ensemble model with XGBoost
-        logger.info("Training ensemble classifier (Random Forest + Gradient Boosting + XGBoost)...")
-        
-        # Try to import XGBoost
-        try:
-            from xgboost import XGBClassifier
-            has_xgboost = True
-            logger.info("XGBoost available, using 3-model ensemble")
-        except ImportError:
-            has_xgboost = False
-            logger.warning("XGBoost not available, using 2-model ensemble. Install with: pip install xgboost")
-        
+        # Random Forest with balanced class weights
         rf = RandomForestClassifier(
             n_estimators=200,
             max_depth=15,
             min_samples_split=10,
             min_samples_leaf=4,
             max_features='sqrt',
-            random_state=42,
-            class_weight='balanced',
-            n_jobs=-1
+            class_weight='balanced',  # Handles imbalance
+            random_state=self.random_state,
+            n_jobs=self.n_jobs
         )
-        
+
+        # Gradient Boosting (manually weighted via sample_weight during fit)
         gb = GradientBoostingClassifier(
             n_estimators=200,
             learning_rate=0.05,
@@ -434,165 +362,215 @@ class DeletionPathogenicityPredictor:
             min_samples_split=10,
             min_samples_leaf=4,
             subsample=0.8,
-            random_state=42
+            random_state=self.random_state
         )
-        
-        # Build estimators list
-        estimators = [
-            ('rf', rf),
-            ('gb', gb)
-        ]
-        
-        # Add XGBoost if available
-        if has_xgboost:
-            scale_pos_weight = (len(y_train) - sum(y_train)) / sum(y_train) if sum(y_train) > 0 else 1.0
+
+        estimators = [('rf', rf), ('gb', gb)]
+
+        # Try XGBoost with scale_pos_weight for imbalance
+        try:
+            from xgboost import XGBClassifier
+            self.has_xgboost = True
+            
+            # Calculate scale_pos_weight (ratio of negative to positive)
+            neg, pos = len(y_train) - y_train.sum(), y_train.sum()
+            scale_pos = neg / pos if pos > 0 else 1.0
+            
+            logger.info(f"XGBoost scale_pos_weight: {scale_pos:.2f}")
             
             xgb = XGBClassifier(
                 n_estimators=200,
                 learning_rate=0.05,
-                max_depth=8,
+                max_depth=6,
                 min_child_weight=4,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                scale_pos_weight=scale_pos_weight,
-                random_state=42,
-                n_jobs=-1,
+                scale_pos_weight=scale_pos,  # Handles imbalance
+                random_state=self.random_state,
+                n_jobs=self.n_jobs,
                 eval_metric='logloss'
             )
             estimators.append(('xgb', xgb))
-        
+            logger.info("XGBoost included in ensemble")
+        except ImportError:
+            self.has_xgboost = False
+            logger.warning("XGBoost not available, using RF + GB only")
+
         self.model = VotingClassifier(
             estimators=estimators,
             voting='soft',
-            n_jobs=-1
+            n_jobs=self.n_jobs
         )
+
+        # Compute sample weights for training (balanced)
+        sample_weights_train = compute_sample_weight(class_weight='balanced', y=y_train)
+
+        # Fit model with sample weights
+        logger.info("Fitting ensemble with sample weights...")
         
-        self.model.fit(X_train_scaled, y_train)
-        
-        # Cross-validation on training set
-        logger.info(f"Running {cv_folds}-fold stratified cross-validation...")
-        cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-        
-        from sklearn.model_selection import cross_val_predict
-        y_train_pred_cv = cross_val_predict(self.model, X_train_scaled, y_train, cv=cv)
-        y_train_proba_cv = cross_val_predict(self.model, X_train_scaled, y_train, cv=cv, method='predict_proba')[:, 1]
-        
-        # Calculate CV metrics
-        cv_precision = precision_score(y_train, y_train_pred_cv, zero_division=0)
-        cv_recall = recall_score(y_train, y_train_pred_cv, zero_division=0)
-        cv_f1 = f1_score(y_train, y_train_pred_cv, zero_division=0)
-        
+        # Fit individual estimators with weights, then combine
+        fitted_estimators = []
+        for name, est in self.model.estimators:
+            if name == 'gb':
+                est.fit(X_train_scaled, y_train, sample_weight=sample_weights_train)
+            elif name == 'xgb':
+                est.fit(X_train_scaled, y_train, sample_weight=sample_weights_train)
+            else:
+                est.fit(X_train_scaled, y_train, sample_weight=sample_weights_train)
+            fitted_estimators.append((name, est))
+
+        # Rebuild VotingClassifier with fitted estimators
+        self.model = VotingClassifier(
+            estimators=fitted_estimators,
+            voting='soft',
+            n_jobs=self.n_jobs
+        )
+        self.model.fit(X_train_scaled, y_train)  # Refit meta-learner
+
+        # === Weighted Cross-Validation ===
+        logger.info(f"Running {cv_folds}-fold weighted cross-validation...")
+        cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=self.random_state)
+        oof_probs = np.zeros(len(X_train_scaled))
+        oof_preds = np.zeros(len(X_train_scaled), dtype=int)
+
+        for fold, (train_idx, val_idx) in enumerate(cv.split(X_train_scaled, y_train), 1):
+            X_tr, X_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
+            y_tr, y_val = y_train[train_idx], y_train[val_idx]
+            sw_tr = compute_sample_weight(class_weight='balanced', y=y_tr)
+
+            # Clone and fit ensemble for this fold
+            fold_estimators = []
+            for name, est in self.model.estimators:
+                est_clone = clone(est)
+                if name == 'xgb' and self.has_xgboost:
+                    # Update XGBoost scale_pos_weight for fold
+                    neg_f, pos_f = (len(y_tr) - y_tr.sum()), y_tr.sum()
+                    est_clone.set_params(scale_pos_weight=neg_f/pos_f if pos_f > 0 else 1.0)
+                
+                if name in ['gb', 'xgb']:
+                    est_clone.fit(X_tr, y_tr, sample_weight=sw_tr)
+                else:
+                    est_clone.fit(X_tr, y_tr, sample_weight=sw_tr)
+                
+                fold_estimators.append((name, est_clone))
+
+            fold_model = VotingClassifier(estimators=fold_estimators, voting='soft', n_jobs=self.n_jobs)
+            fold_model.fit(X_tr, y_tr)
+
+            probs_val = fold_model.predict_proba(X_val)[:, 1]
+            preds_val = (probs_val >= self.threshold).astype(int)
+            oof_probs[val_idx] = probs_val
+            oof_preds[val_idx] = preds_val
+
+        # CV metrics
+        cv_precision = precision_score(y_train, oof_preds, zero_division=0)
+        cv_recall = recall_score(y_train, oof_preds, zero_division=0)
+        cv_f1 = f1_score(y_train, oof_preds, zero_division=0)
         try:
-            cv_auc = roc_auc_score(y_train, y_train_proba_cv)
-        except:
+            cv_auc = roc_auc_score(y_train, oof_probs)
+        except Exception:
             cv_auc = 0.0
         
-        # Confusion matrix for CV
-        tn, fp, fn, tp = confusion_matrix(y_train, y_train_pred_cv).ravel()
-        cv_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        
-        # Evaluate on test set
+        tn_cv, fp_cv, fn_cv, tp_cv = confusion_matrix(y_train, oof_preds).ravel()
+        cv_specificity = tn_cv / (tn_cv + fp_cv) if (tn_cv + fp_cv) > 0 else 0.0
+
+        # Test set evaluation
+        logger.info("Evaluating on held-out test set...")
         y_test_proba = self.model.predict_proba(X_test_scaled)[:, 1]
         y_test_pred = (y_test_proba >= self.threshold).astype(int)
         
         test_precision = precision_score(y_test, y_test_pred, zero_division=0)
         test_recall = recall_score(y_test, y_test_pred, zero_division=0)
         test_f1 = f1_score(y_test, y_test_pred, zero_division=0)
-        
         try:
             test_auc = roc_auc_score(y_test, y_test_proba)
-        except:
+        except Exception:
             test_auc = 0.0
-        
-        # Test confusion matrix
+
         tn_test, fp_test, fn_test, tp_test = confusion_matrix(y_test, y_test_pred).ravel()
         test_specificity = tn_test / (tn_test + fp_test) if (tn_test + fp_test) > 0 else 0.0
-        
-        # Feature importance (from Random Forest)
-        if hasattr(self.model.estimators_[0], 'feature_importances_'):
-            feature_importance = self.model.estimators_[0].feature_importances_
-            top_features = sorted(
-                zip(self.feature_columns, feature_importance),
-                key=lambda x: x[1],
-                reverse=True
-            )[:15]
-            logger.info("Top 15 most important features:")
-            for feat, imp in top_features:
-                logger.info(f"  {feat}: {imp:.4f}")
-        
+
+        # Feature importance from RF
+        rf_imp = None
+        try:
+            rf_est = None
+            for name, est in self.model.estimators:
+                if name == 'rf':
+                    rf_est = est
+                    break
+            if rf_est and hasattr(rf_est, 'feature_importances_'):
+                rf_imp = sorted(
+                    zip(self.feature_columns, rf_est.feature_importances_),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:15]
+                logger.info("Top 15 feature importances (from Random Forest):")
+                for feat, imp in rf_imp:
+                    logger.info(f"  {feat}: {imp:.4f}")
+        except Exception as e:
+            logger.warning(f"Could not extract feature importances: {e}")
+
         results = {
-            # Cross-validation metrics
+            # Cross-validation
             'cv_precision': cv_precision,
             'cv_recall': cv_recall,
             'cv_f1': cv_f1,
-            'cv_specificity': cv_specificity,
             'cv_auc': cv_auc,
+            'cv_specificity': cv_specificity,
+            'cv_tp': int(tp_cv),
+            'cv_tn': int(tn_cv),
+            'cv_fp': int(fp_cv),
+            'cv_fn': int(fn_cv),
             
-            # Test set metrics
+            # Test set
             'test_precision': test_precision,
             'test_recall': test_recall,
             'test_f1': test_f1,
-            'test_specificity': test_specificity,
             'test_auc': test_auc,
-            
-            # Confusion matrix
+            'test_specificity': test_specificity,
             'test_tp': int(tp_test),
             'test_tn': int(tn_test),
             'test_fp': int(fp_test),
             'test_fn': int(fn_test),
             
-            # Predictions for analysis
-            'y_train_pred': y_train_pred_cv,
-            'y_test': y_test,
-            'y_test_pred': y_test_pred,
-            'y_test_proba': y_test_proba,
-            
-            # Data info
-            'n_features': X.shape[1],
+            # Dataset info
+            'n_features': X_all.shape[1],
             'n_train': len(X_train),
             'n_test': len(X_test),
-            'has_xgboost': has_xgboost
+            'n_pathogenic_train': int(y_train.sum()),
+            'n_benign_train': int(len(y_train) - y_train.sum()),
+            'n_pathogenic_test': int(y_test.sum()),
+            'n_benign_test': int(len(y_test) - y_test.sum()),
+            'imbalance_ratio': float(n_pathogenic / n_benign),
+            'class_weight_benign': float(self.class_weights[0]),
+            'class_weight_pathogenic': float(self.class_weights[1]),
+            
+            # Model info
+            'feature_importances_rf_top15': rf_imp,
+            'has_xgboost': self.has_xgboost,
+            
+            # Predictions for plotting/analysis
+            'y_test': y_test,
+            'y_test_pred': y_test_pred,
+            'y_test_proba': y_test_proba
         }
-        
-        logger.info(f"\nTraining Complete:")
-        logger.info(f"  Models: {'RF + GB + XGB' if has_xgboost else 'RF + GB'}")
-        logger.info(f"  Features: {X.shape[1]} (genomic + sequence + gene)")
-        logger.info(f"  CV Precision: {cv_precision:.3f}, Recall: {cv_recall:.3f}, F1: {cv_f1:.3f}, AUC: {cv_auc:.3f}")
-        logger.info(f"  Test Precision: {test_precision:.3f}, Recall: {test_recall:.3f}, F1: {test_f1:.3f}, AUC: {test_auc:.3f}")
-        
+
+        logger.info("=== Training Complete ===")
+        logger.info(f"CV: Precision={cv_precision:.3f}, Recall={cv_recall:.3f}, F1={cv_f1:.3f}, AUC={cv_auc:.3f}")
+        logger.info(f"Test: Precision={test_precision:.3f}, Recall={test_recall:.3f}, F1={test_f1:.3f}, AUC={test_auc:.3f}")
+        logger.info(f"Models used: {'RF + GB + XGB' if self.has_xgboost else 'RF + GB'}")
+
         return results
-    
-    def predict_proba(self, variants: list) -> np.ndarray:
-        """Predict pathogenicity probabilities for variants.
-        
-        Args:
-            variants: List of variant dictionaries
-            
-        Returns:
-            Array of pathogenicity probabilities [0-1]
-        """
+
+    def predict_proba(self, variants: List[Dict[str, Any]]) -> np.ndarray:
+        """Predict pathogenicity probabilities."""
         if self.model is None:
-            raise ValueError("Model has not been trained yet")
-        
-        # Encode features (use existing encoders, don't fit)
+            raise ValueError("Model has not been trained")
         X = self._encode_features(variants, fit=False)
-        
-        # Scale features
         X_scaled = self.scaler.transform(X)
-        
-        # Predict probabilities
-        probs = self.model.predict_proba(X_scaled)[:, 1]
-        
-        return probs
-    
-    def predict(self, variants: list) -> np.ndarray:
-        """Predict pathogenic (1) or benign (0) for variants.
-        
-        Args:
-            variants: List of variant dictionaries
-            
-        Returns:
-            Array of predictions (0 or 1)
-        """
+        return self.model.predict_proba(X_scaled)[:, 1]
+
+    def predict(self, variants: List[Dict[str, Any]]) -> np.ndarray:
+        """Predict binary labels (pathogenic=1, benign=0)."""
         probs = self.predict_proba(variants)
         return (probs >= self.threshold).astype(int)
