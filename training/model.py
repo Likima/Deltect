@@ -36,15 +36,14 @@ class DeletionPathogenicityPredictor:
         self.scaler = RobustScaler()
         self.label_encoders: Dict[str, LabelEncoder] = {}
         self.feature_columns: Optional[List[str]] = None
-        self.categorical_columns = ['gene', 'variant_type', 'review_status']
+        # REMOVED: review_status - this is metadata from ClinVar, not biological
+        self.categorical_columns = ['gene']  # Only gene remains
 
         # Placeholder for model
         self.model: Optional[VotingClassifier] = None
         self.has_xgboost = False
-        self.class_weights = None  # Store computed class weights
+        self.class_weights = None
 
-    # ... (keep all the helper methods: _calculate_sequence_features, _encode_gene_features, etc.)
-    
     def _calculate_sequence_features(self, seq: str) -> dict:
         if not seq or not isinstance(seq, str):
             return {
@@ -118,25 +117,6 @@ class DeletionPathogenicityPredictor:
             'is_ensembl_id': 1.0 if (gene and gene.startswith('ENSG')) else 0.0
         }
 
-    def _encode_review_status_confidence(self, review_status: str) -> float:
-        if not review_status:
-            return 0.0
-        rs = review_status.lower()
-        confidence_map = {
-            'practice guideline': 1.0,
-            'reviewed by expert panel': 0.9,
-            'criteria provided, multiple submitters': 0.7,
-            'criteria provided, single submitter': 0.5,
-            'no assertion criteria provided': 0.2,
-            'no assertion provided': 0.1,
-            'conflicting': 0.3,
-            'from_bam': 0.0
-        }
-        for status, conf in confidence_map.items():
-            if status in rs:
-                return conf
-        return 0.0
-
     def _encode_features(self, variants: List[Dict[str, Any]], fit: bool = False) -> pd.DataFrame:
         df = pd.DataFrame(variants)
         for col in ('chr', 'start', 'end'):
@@ -162,27 +142,26 @@ class DeletionPathogenicityPredictor:
         df['is_medium_del'] = ((df['deletion_length'] >= 1000) & (df['deletion_length'] < 10000)).astype(float)
         df['is_large_del'] = (df['deletion_length'] >= 10000).astype(float)
 
-        seq_feats = df.apply(lambda r: pd.Series(self._calculate_sequence_features(r.get('ref_seq', ''))), axis=1)
+        # Sequence features
+        seq_feats = df.apply(lambda r: pd.Series(self._calculate_sequence_features(r.get('sequence', '') or r.get('ref_seq', ''))), axis=1)
         df = pd.concat([df, seq_feats], axis=1)
 
+        # Gene features
         gene_feats = df.apply(lambda r: pd.Series(self._encode_gene_features(r.get('gene', ''))), axis=1)
         df = pd.concat([df, gene_feats], axis=1)
 
-        df['review_confidence'] = df.apply(lambda r: self._encode_review_status_confidence(r.get('review_status', '')), axis=1)
+        # REMOVED: All ClinVar metadata features that leak label information:
+        # - review_confidence (derived from review_status)
+        # - high_confidence_benign (uses clinical_significance)
+        # - benign_prior (derived from population_af which is ClinVar metadata)
+        # - population_af (not available for BAM-extracted variants)
+        
+        # REMOVED: Sequencing quality features (only present in BAM data):
+        # - mapping_quality
+        # - read_depth
+        # These create train/test distribution mismatch
 
-        if 'population_af' not in df.columns:
-            df['population_af'] = 0.0
-        df['population_af'] = pd.to_numeric(df['population_af'], errors='coerce').fillna(0.0)
-        df['is_rare'] = (df['population_af'] < 0.01).astype(float)
-        df['benign_prior'] = 1.0 - df['is_rare']
-
-        if 'mapping_quality' not in df.columns:
-            df['mapping_quality'] = 30
-        df['mapping_quality'] = pd.to_numeric(df['mapping_quality'], errors='coerce').fillna(30) / 60.0
-        if 'read_depth' not in df.columns:
-            df['read_depth'] = 30
-        df['read_depth'] = np.log1p(pd.to_numeric(df['read_depth'], errors='coerce').fillna(30))
-
+        # Encode gene (only categorical feature remaining)
         for col in self.categorical_columns:
             if col not in df.columns:
                 df[col] = 'N/A'
@@ -205,53 +184,55 @@ class DeletionPathogenicityPredictor:
                             return -1
                     df[f'{col}_encoded'] = df[col].apply(enc)
 
+        # CLEANED FEATURE SET: Only biological features
         numeric_features = [
-            'chr', 'deletion_length', 'log_deletion_length', 'normalized_chr_position',
-            'is_small_del', 'is_medium_del', 'is_large_del',
-            'gc_content', 'repeat_content', 'homopolymer_run', 'cpg_islands', 'at_content', 'complexity_score',
-            'has_gene', 'is_known_disease_gene', 'gene_length', 'is_ensembl_id',
-            'review_confidence', 'population_af', 'is_rare', 'benign_prior', 'mapping_quality', 'read_depth'
+            # Genomic location
+            'chr', 
+            'deletion_length', 
+            'log_deletion_length', 
+            'normalized_chr_position',
+            
+            # Deletion size categories
+            'is_small_del', 
+            'is_medium_del', 
+            'is_large_del',
+            
+            # Sequence composition (biological)
+            'gc_content', 
+            'repeat_content', 
+            'homopolymer_run', 
+            'cpg_islands', 
+            'at_content', 
+            'complexity_score',
+            
+            # Gene context (biological)
+            'has_gene', 
+            'is_known_disease_gene', 
+            'gene_length', 
+            'is_ensembl_id',
+            
+            # Gene encoding
+            'gene_encoded'
         ]
-
-        df['common_variant'] = (df['population_af'] > 0.05).astype(float)  # >5% frequency likely benign
-        df['small_and_common'] = (
-            (df['deletion_length'] < 1000) & 
-            (df['population_af'] > 0.01)
-        ).astype(float)
-        
-        # Review status confidence for benign
-        df['high_confidence_benign'] = (
-            (df['review_confidence'] > 0.5) & 
-            (df.apply(lambda r: 'benign' in str(r.get('clinical_significance', '')).lower(), axis=1))
-        ).astype(float)
-        
-        # Low complexity sequences are often benign (repeats, low-complexity regions)
-        df['low_complexity_benign'] = (
-            (df['complexity_score'] < 0.3) & 
-            (df['repeat_content'] > 0.5)
-        ).astype(float)
-        
-        numeric_features.extend([
-            'common_variant',
-            'small_and_common',
-            'high_confidence_benign',
-            'low_complexity_benign'
-        ])
-
-        for col in self.categorical_columns:
-            numeric_features.append(f'{col}_encoded')
 
         if fit:
             self.feature_columns = numeric_features
-            logger.info(f"Using {len(self.feature_columns)} features")
+            logger.info(f"Using {len(self.feature_columns)} BIOLOGICAL features only")
+            logger.info("REMOVED: review_status, population_af, mapping_quality, read_depth, consequence, condition")
 
         X = df[numeric_features].copy().fillna(0)
         return X
 
     def train(self, variants: List[Dict[str, Any]], test_size: float = 0.2, cv_folds: int = 5):
         """
-        Train predictor on imbalanced data (e.g., 5000 pathogenic, 2000 benign).
-        Uses class weights instead of resampling to handle imbalance.
+        Train predictor on imbalanced data using only biological features.
+        
+        REMOVED FEATURES (data leakage):
+        - review_status, review_confidence: ClinVar curation metadata
+        - consequence, condition: Labels derived from clinical_significance
+        - population_af, is_rare, benign_prior: Database annotations
+        - high_confidence_benign: Derived from clinical_significance
+        - mapping_quality, read_depth: BAM-specific (not in ClinVar training data)
         
         Args:
             variants: List of variant dictionaries with 'clinical_significance'
@@ -259,9 +240,9 @@ class DeletionPathogenicityPredictor:
             cv_folds: Number of CV folds
         """
         logger.info("=== Training Deletion Pathogenicity Predictor ===")
-        logger.info("Handling class imbalance with weighted loss (no resampling)")
+        logger.info("Using BIOLOGICAL FEATURES ONLY (no metadata leakage)")
         
-        # Build labels, drop uncertain/ambiguous
+        # Build labels
         rows = []
         labels = []
         for v in variants:
@@ -272,7 +253,6 @@ class DeletionPathogenicityPredictor:
             elif 'benign' in sig and 'pathogenic' not in sig:
                 rows.append(v)
                 labels.append(0)
-            # Skip uncertain/ambiguous
 
         if len(rows) == 0:
             raise ValueError("No labeled variants found after filtering uncertain labels")
@@ -286,7 +266,7 @@ class DeletionPathogenicityPredictor:
         logger.info(f"Dataset: {n_pathogenic} pathogenic, {n_benign} benign")
         logger.info(f"Imbalance ratio: {n_pathogenic/n_benign:.2f}:1 (pathogenic:benign)")
 
-        # Compute class weights for imbalance handling
+        # Compute class weights
         self.class_weights = compute_class_weight(
             class_weight='balanced',
             classes=np.array([0, 1]),
@@ -295,33 +275,30 @@ class DeletionPathogenicityPredictor:
         
         logger.info(f"Computed class weights: benign={self.class_weights[0]:.3f}, pathogenic={self.class_weights[1]:.3f}")
 
-        # Stratified train/test split by size_bin + class
+        # Stratified train/test split
         df_tmp = pd.DataFrame(rows)
         df_tmp['deletion_length'] = (pd.to_numeric(df_tmp.get('end', 0)) - pd.to_numeric(df_tmp.get('start', 0))).clip(lower=0)
         
         try:
-            n_bins = min(5, len(df_tmp) // 100)  # At least 100 samples per bin
+            n_bins = min(5, len(df_tmp) // 100)
             if n_bins >= 2:
                 df_tmp['size_bin'] = pd.qcut(
                     df_tmp['deletion_length'] + 1, 
-                    q=n_bins,  # Reduced from 10
+                    q=n_bins,
                     labels=False, 
                     duplicates='drop'
                 )
-                # Combine size_bin with class label for stratification
                 stratify_col = df_tmp['size_bin'].astype(str) + "_" + pd.Series(y_all).astype(str)
                 
-                # Check if any class has only 1 member
                 unique_classes, class_counts = np.unique(stratify_col, return_counts=True)
                 min_class_count = class_counts.min()
                 
                 if min_class_count < 2:
                     logger.warning(f"Size-based stratification has classes with only {min_class_count} sample(s)")
-                    logger.warning("Falling back to label-only stratification")
-                    stratify_col = y_all  # Fall back to simple stratification
+                    stratify_col = y_all
             else:
                 logger.warning(f"Too few samples ({len(df_tmp)}) for size-based stratification")
-                stratify_col = y_all  # Too few samples for binning
+                stratify_col = y_all
                 
         except Exception as e:
             logger.warning(f"Could not create size bins: {e}. Using label-only stratification")
@@ -339,22 +316,20 @@ class DeletionPathogenicityPredictor:
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
 
-        # Build ensemble with class weights
+        # Build ensemble
         logger.info("Building weighted ensemble (RF + GB + XGB)")
         
-        # Random Forest with balanced class weights
         rf = RandomForestClassifier(
             n_estimators=200,
             max_depth=15,
             min_samples_split=10,
             min_samples_leaf=4,
             max_features='sqrt',
-            class_weight='balanced',  # Handles imbalance
+            class_weight='balanced',
             random_state=self.random_state,
             n_jobs=self.n_jobs
         )
 
-        # Gradient Boosting (manually weighted via sample_weight during fit)
         gb = GradientBoostingClassifier(
             n_estimators=200,
             learning_rate=0.05,
@@ -367,12 +342,10 @@ class DeletionPathogenicityPredictor:
 
         estimators = [('rf', rf), ('gb', gb)]
 
-        # Try XGBoost with scale_pos_weight for imbalance
         try:
             from xgboost import XGBClassifier
             self.has_xgboost = True
             
-            # Calculate scale_pos_weight (ratio of negative to positive)
             neg, pos = len(y_train) - y_train.sum(), y_train.sum()
             scale_pos = neg / pos if pos > 0 else 1.0
             
@@ -385,7 +358,7 @@ class DeletionPathogenicityPredictor:
                 min_child_weight=4,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                scale_pos_weight=scale_pos,  # Handles imbalance
+                scale_pos_weight=scale_pos,
                 random_state=self.random_state,
                 n_jobs=self.n_jobs,
                 eval_metric='logloss'
@@ -402,13 +375,10 @@ class DeletionPathogenicityPredictor:
             n_jobs=self.n_jobs
         )
 
-        # Compute sample weights for training (balanced)
         sample_weights_train = compute_sample_weight(class_weight='balanced', y=y_train)
 
-        # Fit model with sample weights
         logger.info("Fitting ensemble with sample weights...")
         
-        # Fit individual estimators with weights, then combine
         fitted_estimators = []
         for name, est in self.model.estimators:
             if name == 'gb':
@@ -419,15 +389,14 @@ class DeletionPathogenicityPredictor:
                 est.fit(X_train_scaled, y_train, sample_weight=sample_weights_train)
             fitted_estimators.append((name, est))
 
-        # Rebuild VotingClassifier with fitted estimators
         self.model = VotingClassifier(
             estimators=fitted_estimators,
             voting='soft',
             n_jobs=self.n_jobs
         )
-        self.model.fit(X_train_scaled, y_train)  # Refit meta-learner
+        self.model.fit(X_train_scaled, y_train)
 
-        # === Weighted Cross-Validation ===
+        # Cross-validation
         logger.info(f"Running {cv_folds}-fold weighted cross-validation...")
         cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=self.random_state)
         oof_probs = np.zeros(len(X_train_scaled))
@@ -438,12 +407,10 @@ class DeletionPathogenicityPredictor:
             y_tr, y_val = y_train[train_idx], y_train[val_idx]
             sw_tr = compute_sample_weight(class_weight='balanced', y=y_tr)
 
-            # Clone and fit ensemble for this fold
             fold_estimators = []
             for name, est in self.model.estimators:
                 est_clone = clone(est)
                 if name == 'xgb' and self.has_xgboost:
-                    # Update XGBoost scale_pos_weight for fold
                     neg_f, pos_f = (len(y_tr) - y_tr.sum()), y_tr.sum()
                     est_clone.set_params(scale_pos_weight=neg_f/pos_f if pos_f > 0 else 1.0)
                 
@@ -490,7 +457,7 @@ class DeletionPathogenicityPredictor:
         tn_test, fp_test, fn_test, tp_test = confusion_matrix(y_test, y_test_pred).ravel()
         test_specificity = tn_test / (tn_test + fp_test) if (tn_test + fp_test) > 0 else 0.0
 
-        # Feature importance from RF
+        # Feature importance
         rf_imp = None
         try:
             rf_est = None
@@ -504,14 +471,13 @@ class DeletionPathogenicityPredictor:
                     key=lambda x: x[1],
                     reverse=True
                 )[:15]
-                logger.info("Top 15 feature importances (from Random Forest):")
+                logger.info("Top 15 feature importances (Random Forest):")
                 for feat, imp in rf_imp:
                     logger.info(f"  {feat}: {imp:.4f}")
         except Exception as e:
             logger.warning(f"Could not extract feature importances: {e}")
 
         results = {
-            # Cross-validation
             'cv_precision': cv_precision,
             'cv_recall': cv_recall,
             'cv_f1': cv_f1,
@@ -522,7 +488,6 @@ class DeletionPathogenicityPredictor:
             'cv_fp': int(fp_cv),
             'cv_fn': int(fn_cv),
             
-            # Test set
             'test_precision': test_precision,
             'test_recall': test_recall,
             'test_f1': test_f1,
@@ -533,7 +498,6 @@ class DeletionPathogenicityPredictor:
             'test_fp': int(fp_test),
             'test_fn': int(fn_test),
             
-            # Dataset info
             'n_features': X_all.shape[1],
             'n_train': len(X_train),
             'n_test': len(X_test),
@@ -545,11 +509,9 @@ class DeletionPathogenicityPredictor:
             'class_weight_benign': float(self.class_weights[0]),
             'class_weight_pathogenic': float(self.class_weights[1]),
             
-            # Model info
             'feature_importances_rf_top15': rf_imp,
             'has_xgboost': self.has_xgboost,
             
-            # Predictions for plotting/analysis
             'y_test': y_test,
             'y_test_pred': y_test_pred,
             'y_test_proba': y_test_proba

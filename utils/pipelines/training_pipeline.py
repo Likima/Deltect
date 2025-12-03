@@ -4,6 +4,7 @@ import numpy as np
 from data.api import fetch_clinvar_deletions_entrez
 from data.data_processor import pass_through_variants
 from data.preprocessing import summarize_variants
+from data.ref_genome_data import ReferenceGenomeSampler
 from training.model import DeletionPathogenicityPredictor
 import json
 from pathlib import Path
@@ -19,7 +20,8 @@ TEST_SIZE = config.TEST_SIZE
 CV_FOLDS = config.CV_FOLDS
 SAVE_OUTPUTS = config.SAVE_OUTPUTS
 REFERENCE_FASTA = config.REFERENCE_FASTA
-# REMOVED: BALANCE_CLASSES - no longer needed since we always use weighted training
+# Add configuration for reference genome sampling
+BUILD_BALANCED_DATASET = getattr(config, 'BUILD_BALANCED_DATASET', True)
 
 
 def train_pipeline():
@@ -30,7 +32,7 @@ def train_pipeline():
     print("="*70)
     
     # Step 1: Fetch deletion variants from ClinVar
-    print(f"\n[1/4] Fetching deletion variants from ClinVar...")
+    print(f"\n[1/5] Fetching deletion variants from ClinVar...")
     print(f"Chromosomes: {', '.join(CHROMOSOMES)}")
     print(f"Maximum variants per chromosome: {MAX_VARIANTS_PER_CHR}")
     
@@ -64,7 +66,7 @@ def train_pipeline():
         print(f"Saved raw variants to {output_dir / 'raw_variants.json'}")
     
     # Step 2: Process variants
-    print("\n[2/4] Processing and normalizing variants...")
+    print("\n[2/5] Processing and normalizing variants...")
     
     processed_variants = pass_through_variants(all_raw_variants, reference_fasta=REFERENCE_FASTA)
     
@@ -81,13 +83,62 @@ def train_pipeline():
         print(f"Saved processed variants to {output_dir / 'processed_variants.json'}")
     
     # Step 3: Analyze clinical significance distribution
-    print("\n[3/4] Analyzing clinical significance distribution...")
+    print("\n[3/5] Analyzing clinical significance distribution...")
     print("-" * 70)
     summarize_variants(processed_variants)
     print("-" * 70)
 
-    # Step 4: Train pathogenicity predictor
-    print(f"\n[4/4] Training pathogenicity predictor...")
+    # Step 4: Sample normal reference sequences
+    normal_sequences = []
+    
+    if BUILD_BALANCED_DATASET:
+        print(f"\n[4/5] Sampling normal reference sequences...")
+        print(f"Reference genome: {REFERENCE_FASTA}")
+        
+        try:
+            if not Path(REFERENCE_FASTA).exists():
+                print(f"WARNING: Reference genome not found: {REFERENCE_FASTA}")
+                print("Skipping reference genome sampling.")
+            else:
+                # Initialize reference sampler
+                sampler = ReferenceGenomeSampler(
+                    reference_fasta=REFERENCE_FASTA,
+                    chromosomes=CHROMOSOMES
+                )
+                
+                # Match deletion distribution
+                num_normal_samples = len(processed_variants)
+                print(f"Sampling {num_normal_samples} normal sequences to match deletion distribution...")
+                
+                normal_sequences = sampler.match_str_distribution(
+                    str_variants=processed_variants,
+                    ratio=1.0
+                )
+                
+                print(f"Sampled {len(normal_sequences)} normal reference sequences")
+                
+                # Save normal sequences
+                if SAVE_OUTPUTS:
+                    with open(output_dir / "normal_sequences.json", "w") as f:
+                        json.dump(normal_sequences, f, indent=2)
+                    print(f"Saved normal sequences to {output_dir / 'normal_sequences.json'}")
+                
+                # Combine with processed variants
+                all_training_variants = processed_variants + normal_sequences
+                print(f"\nCombined dataset: {len(all_training_variants)} total samples")
+                print(f"  ClinVar variants: {len(processed_variants)}")
+                print(f"  Reference benign: {len(normal_sequences)}")
+                
+        except Exception as e:
+            print(f"ERROR sampling reference genome: {e}")
+            print("Continuing without normal sequences...")
+            all_training_variants = processed_variants
+    else:
+        print("\n[4/5] Skipping reference genome sampling (BUILD_BALANCED_DATASET=False)")
+        all_training_variants = processed_variants
+
+    # Step 5: Train pathogenicity predictor
+    print(f"\n[5/5] Training pathogenicity predictor...")
     print(f"Test set size: {TEST_SIZE*100}%")
     print(f"Cross-validation folds: {CV_FOLDS}")
     print(f"Class balancing: Automatic weighted training (always enabled)")
@@ -95,10 +146,9 @@ def train_pipeline():
     pathogenicity_predictor = DeletionPathogenicityPredictor(threshold=0.40)
     
     try:
-        # Train on deletion variants with improved model
-        # REMOVED: balance_classes parameter - weighted training is now automatic
+        # Train on combined dataset (ClinVar + reference genome samples)
         path_results = pathogenicity_predictor.train(
-            processed_variants,
+            all_training_variants,
             test_size=TEST_SIZE,
             cv_folds=CV_FOLDS
         )
@@ -107,6 +157,7 @@ def train_pipeline():
         print("PATHOGENICITY PREDICTOR RESULTS")
         print("="*70)
         
+        # ...existing code...
         # Cross-validation results
         print("\nCross-Validation Performance:")
         print(f"  Precision:    {path_results.get('cv_precision', 0):.4f}")
@@ -169,7 +220,9 @@ def train_pipeline():
                     'test_size': TEST_SIZE,
                     'cv_folds': CV_FOLDS,
                     'threshold': pathogenicity_predictor.threshold,
-                    'weighted_training': True  # Always true now
+                    'weighted_training': True,
+                    'reference_genome_sampling': BUILD_BALANCED_DATASET,
+                    'n_reference_samples': len(normal_sequences) if BUILD_BALANCED_DATASET else 0
                 },
                 'cross_validation': {
                     'precision': path_results['cv_precision'],
