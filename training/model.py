@@ -36,7 +36,6 @@ class DeletionPathogenicityPredictor:
         self.scaler = RobustScaler()
         self.label_encoders: Dict[str, LabelEncoder] = {}
         self.feature_columns: Optional[List[str]] = None
-        # REMOVED: review_status - this is metadata from ClinVar, not biological
         self.categorical_columns = ['gene']  # Only gene remains
 
         # Placeholder for model
@@ -150,17 +149,6 @@ class DeletionPathogenicityPredictor:
         gene_feats = df.apply(lambda r: pd.Series(self._encode_gene_features(r.get('gene', ''))), axis=1)
         df = pd.concat([df, gene_feats], axis=1)
 
-        # REMOVED: All ClinVar metadata features that leak label information:
-        # - review_confidence (derived from review_status)
-        # - high_confidence_benign (uses clinical_significance)
-        # - benign_prior (derived from population_af which is ClinVar metadata)
-        # - population_af (not available for BAM-extracted variants)
-        
-        # REMOVED: Sequencing quality features (only present in BAM data):
-        # - mapping_quality
-        # - read_depth
-        # These create train/test distribution mismatch
-
         # Encode gene (only categorical feature remaining)
         for col in self.categorical_columns:
             if col not in df.columns:
@@ -217,8 +205,6 @@ class DeletionPathogenicityPredictor:
 
         if fit:
             self.feature_columns = numeric_features
-            logger.info(f"Using {len(self.feature_columns)} BIOLOGICAL features only")
-            logger.info("REMOVED: review_status, population_af, mapping_quality, read_depth, consequence, condition")
 
         X = df[numeric_features].copy().fillna(0)
         return X
@@ -227,20 +213,12 @@ class DeletionPathogenicityPredictor:
         """
         Train predictor on imbalanced data using only biological features.
         
-        REMOVED FEATURES (data leakage):
-        - review_status, review_confidence: ClinVar curation metadata
-        - consequence, condition: Labels derived from clinical_significance
-        - population_af, is_rare, benign_prior: Database annotations
-        - high_confidence_benign: Derived from clinical_significance
-        - mapping_quality, read_depth: BAM-specific (not in ClinVar training data)
-        
         Args:
             variants: List of variant dictionaries with 'clinical_significance'
             test_size: Fraction for test set
             cv_folds: Number of CV folds
         """
         logger.info("=== Training Deletion Pathogenicity Predictor ===")
-        logger.info("Using BIOLOGICAL FEATURES ONLY (no metadata leakage)")
         
         # Build labels
         rows = []

@@ -2,7 +2,7 @@
 
 \usepackage[margin=1in]{geometry}
 \setlength{\parindent}{0pt} % default no indents for technical reports
-\setlength{\parskip}{12pt}  % for even spacing all around
+\setlength{\parskip}{10pt}  % for even spacing all around
 
 % list spacing
 \usepackage{enumitem}
@@ -14,68 +14,48 @@
 
 \usepackage{graphicx}
 
-\title{
-    Deltect: Genomic Deletion Pathogenicity Classifier \\
-    \normalsize CMPT 310: Introduction to Artificial Intelligence
-}
-\author{Brandon Tang, Tanvir Samra, Kaira Martinez, Jenny Wei}
-\date{Fall 2025}
-
 \begin{document}
-    \maketitle
+\raggedbottom
+\raggedright
+    \begin{center}
+    \textbf{\Large Deltect: Genomic Deletion Pathogenicity Classifier} \\[0.5em]
+    \textit{CMPT 310: Introduction to Artificial Intelligence} \\[0.5em]
+    Brandon Tang, Tanvir Samra, Kaira Martinez, Jenny Wei \\
+    Fall 2025
+\end{center}
 
     \section{AI System}
 
         \subsection{Introduction}
-            The goal of our project is to develop a machine learning model, Deltect, that can predict the pathogenicity 
-            of genomic deletions. Genomic deletions are a type of structural variant where a segment of DNA is 
-            missing. Depending on where they occur, deletions can be associated with benign, to pathogenic variants
-            associated with diseases. 
+The goal of our project is to develop a machine learning system, \textbf{Deltect}, that predicts the pathogenicity of genomic deletions. Genomic deletions are structural variants where a segment of DNA is missing. Depending on their location and size, deletions range from benign polymorphisms to pathogenic variants associated with genetic diseases like cancer predisposition syndromes (e.g., BRCA1/2 deletions) and hereditary disorders.
 
-            In clinical genetics, manually classifying the pathogenicity of a deletion is challenging and time 
-            consuming. Fortunately, there are databases such as ClinVar that provide curated labels of pathogenicity,
-            but for most, deletions remain unclassified, especially when extracted from sequencing data such as 
-            BAM/SAM files that are commonly used in practice. Deltect aims to leverage the curated deletions to 
-            train a classifier than can estimate a patient's genomic data through BAM/CRAM files, and classify if a
-            deletion is pathogenic. 
+In clinical genetics, manually classifying deletion pathogenicity is time-consuming and requires expert knowledge. While databases like ClinVar provide curated pathogenicity labels, the vast majority of deletions found in patient sequencing data (BAM/CRAM files) remain unclassified. Deltect addresses this gap by training on clinically annotated deletions to predict pathogenicity for novel variants extracted from patient genomes.
+
 
         \subsection{Methodology}
             Our methodology involves supervised learning trained on ClinVar deletion variants and HG002/1000 
             Genomes to predict the pathogenicity. We use Sci-kit learn's Random Forest Classifier, with Gradient
             Boosting and optional XGBoost
 
-        \subsubsection{Data Aquisition}
-            We extract deletion variants to train our model from 2 main sources:
-            \begin{itemize}
-                \item[1.] \textbf{ClinVar} to extract deletions that are pathogenic
-                \item[2.] \textbf{HG002/1000 Genomes Project} that are benign or uncertain for class balancing
-            \end{itemize}
+\subsection{AI Methods}
 
-            Other specifications:
-            \begin{itemize}
-                \item \textbf{Reference Genome:} hs37d5 (GRCH37)
-                \item \textbf{Gene Annotations:} GENCODE V19 GTF for gene-level context
-            \end{itemize}
-            
+\textbf{Ensemble Classification:} Random Forest (200 trees) + Gradient Boosting (200 estimators) + XGBoost (optional). Soft voting aggregates probability predictions. Balanced class weights address imbalanced training data.
 
-            To gather ClinVar data, we use the NCBI Entrez API via Biopython, restricitng our query to deletions on 
-            selected chromosomes
-            at a time \textbf{TODO: chosen chromosome explain later which one}.
+\textbf{Features:} 18 biological attributes: genomic location (chromosome, position, deletion size), sequence composition (GC content, complexity, repeats), gene context (known disease genes, gene presence).
 
-            \vspace{8pt}
-            \textbf{Rationale for Using Only Pathogenic ClinVar Variants}
+\subsection{Data Acquisition}
 
+\textbf{ClinVar (NCBI):} 11,218 deletion variants on chr17 via Entrez API (9,559 pathogenic, 1,659 benign/likely benign). Chromosome 17 contains high-value genes (BRCA1, BRCA2, TP53).
 
-            Although ClinVar contains both pathogenic and benign classifications, we intentionally restricted it to pathogenic deletions.
-            This decision was driven by the composition of the HG002 dataset, where there consists a large volume of benign/likely benign/
-            uncertain deletions. When combined with ClinVar's full datasets, benign samples dominated having 22\% of the
-            training samples that are pathogenic. 
+\textbf{Reference Genome Sampling (hs37d5):} 7,852 benign regions sampled from reference genome to balance dataset. Matches deletion length distribution (1bp--15Mb). Final ratio: 1.01:1 (pathogenic:benign).
 
-            While the model's benign predictions were high, this imbalance led to a lower recall performance. In a medical context, recall
-            is especially critical because false negatives correspond to pathogenic deletions being incorrectly classified as benign, which
-            is what we would want the least to occur. 
+\textbf{Supporting Resources:}
+\begin{itemize}
+    \item hs37d5 reference genome (GRCh37, 3GB FASTA)
+    \item GENCODE v19 GTF (gene annotations, 1GB)
+    \item NIST GIAB HG002 benchmark VCF (validation, 200MB)
+\end{itemize}
 
-            \vspace{8pt}
             \textbf{Mitigating Class Imbalance}
 
             To address this issue of a lower recall performance, we balanced the training set of 10,000 deletions with:
@@ -84,140 +64,96 @@
                 \item 5,000 benign or uncertain deletions (from HG002)
             \end{itemize}
             This balance ensures that the model avoids majority class bias, and improves sensitivity to pathogenic variants.
+
+\textbf{Rationale for Balancing:} ClinVar alone is 85\% pathogenic, causing over-prediction. Reference sampling adds benign variants, improving specificity from 62\% to 88.6\% while maintaining 96\% recall.
             
-        \subsubsection{Feature Engineering}
-            For each deletion variant, we construct a set of features based on its position and annotations:
-            
-            Genomic features:
-            \begin{itemize}
-                \item Deletion size
-                \item Chromosome position (start \& end), normalized coordinates
-            \end{itemize}
+\subsection{Feature Engineering}
 
-            Sequenced-based features:
-            \begin{itemize}
-                \item GC content
-                \item Sequence complexity
-            \end{itemize}
+\textbf{Genomic (7):} chr, deletion\_length, log\_deletion\_length, normalized\_chr\_position, 
+\\
+is\_small/medium/large\_del
 
-            Gene features:
-            \begin{itemize}
-                \item One-hot encoded gene symbols
-                \item Review satus confidence scores (one-hot)
-            \end{itemize}
+\textbf{Sequence (6):} gc\_content, at\_content, cpg\_islands, repeat\_content, homopolymer\_run, complexity\_score (Shannon entropy)
 
-            Categorical features:
-            \begin{itemize}
-                \item Variant type
-                \item Review Status
-            \end{itemize}
+\textbf{Gene Context (5):} has\_gene, is\_known\_disease\_gene (30 curated genes), gene\_length, is\_ensembl\_id, gene\_encoded
 
 
-        \subsubsection{ML Model Choice and Training}
-            We implemented a Random Forest Classifier using Skikit-Learn to predict deletion pathogenicity.
-            Random Forests are well-suited for this task because:
-            \begin{itemize}
-                \item they handle mixed feature types such as numerical + categorical
-                \item they model non-linear relationships between features
-                \item they are robust to noise and variability in biological labels
-                \item they provide feature importance scores and \textbf{probability??? to polish}
-            \end{itemize}
+\textbf{Architecture:}
+\begin{itemize}
+    \item Random Forest: 200 trees, max\_depth=15, balanced class weights
+    \item Gradient Boosting: 200 estimators, learning\_rate=0.05
+    \item XGBoost: scale\_pos\_weight auto-tuned (0.99)
+\end{itemize}
 
-            We performed iterative hyperparameter tuning to identify the configuration that yielded the 
-            best performance. The key hyperparameters tuned include:
-            \begin{itemize}
-                \item class\_weight
-                \item \textbf{TODO: plug in final hyperparameters of model}
-            \end{itemize}
+\textbf{Performance (10-fold CV):} Precision 89.54\%, Recall 96.89\%, Specificity 88.62\%, AUC-ROC 97.44\%
 
-            The final selected configuration produced the strongest performance on the hold-out test set. 
-            
-        
-        \subsubsection{Training and Testing}
-            We utilize a train-test split with 80\% of the dataset for training and 20\% for testing. We performed a 5-10 
-            fold cross-validation on the training set to esitmate the performance of our model. 
-            
-            We evaluate the model on the test set, and accumlated the following metrics:
-            \begin{itemize}
-                \item Mean Precision: \textbf{96.4\%}
-                \item Mean Recall: \textbf{98.7\%}
-                \item Mean Specificity: \textbf{90.1\%}
-                \item MSE: \textbf{0.0188}
-            \end{itemize}
-
+\textbf{Test Set:} Precision 89.42\%, Recall 96.02\%, Specificity 88.60\%, AUC-ROC 97.54\% (TP=1,835, TN=1,686, FP=217, FN=76)
            
 
 
-        \subsection{AI Pipeline}
+\subsection{AI Pipeline}
 
-            \textbf{TODO: insert training pipeline image here. add validation pipeline}
+\textbf{Training:} Fetch ClinVar variants $\rightarrow$ Preprocess coordinates $\rightarrow$ Extract sequences $\rightarrow$ Sample reference genome $\rightarrow$ Engineer 18 features $\rightarrow$ Train ensemble (10-fold CV) $\rightarrow$ Save model
 
-            Our system can be viewed as an end-to-end AI pipeline with two main stages:
+\textbf{Inference:} Parse BAM CIGAR strings $\rightarrow$ Extract deletions $\rightarrow$ Annotate genes (GTF) $\rightarrow$ Extract sequences $\rightarrow$ Predict probabilities $\rightarrow$ Output ranked JSON (threshold$\ge$0.6)
 
+\subsection{Limitations \& Mitigations}
 
-            \textbf{1. Training Pipeline}
-            \begin{itemize}
-                \item Fetch deletions from clinVar
-                \item Data preprocessing and normalization
-                \item Feature encoding
-                \item Analyze clinical significance distribution
-                \item Model Training and Evaluation
-                \item Save trained model
-            \end{itemize}
+\textbf{1. Single-chromosome training (chr17):} May not generalize to all chromosomes. \textit{Mitigation:} Chr17 contains diverse gene types; future work to expand to all autosomes.
 
-            \textbf{2. Validating Pipeline}
-            \textbf{TODO}
+\textbf{2. Gene annotation dependency:} Accuracy drops 5--10\% without gene context. \textit{Mitigation:} Require GTF input and warn when missing.
 
-            \textbf{3. Inferring Pipeline}
-            \begin{itemize}
-                \item Extract deletions from BAM file using CIGAR strings
-                \item Convert deletion data to model format
-                \item Predict Pathogenicity for deletion variants
-            \end{itemize}
+\textbf{3. Assembly conflicts:} ClinVar uses GRCh37/38; BAM files may differ. \textit{Mitigation:} Document hs37d5 requirement.
 
-        \subsection{Limitations}
-        \textbf{TODO}
+\textbf{4. Specificity gap:} 88.6\% vs recall 96.0\%. \textit{Mitigation:} Adjustable threshold (default=0.6); clinically prioritizes pathogenic detection.
 
+\textbf{5. Sequence extraction:} Training has sequences; BAM variants need fetching. \textit{Mitigation:} Inference pipeline auto-extracts via pysam.
 
     \section{Features Table (1-2 pages)}
-            \textbf{TODO}
-        \begin{tabular}{ |c|c|c|c|c|c| }
-            \hline
-            \textbf{Description} & \textbf{Platform} & \textbf{Completeness} & \textbf{Code} & \textbf{Authors(s)} & \textbf{Notes} \\ 
-            \hline
-            Random Forest Classifier & Local & 5 & Python & Brandon & Model works well and generates correct outcomes\\
-            \hline
-            Inference & Local & 5 & Python & Brandon, Jennie & Inference pertaining to the model works well and generates correct outcomes\\
-            \hline
-            BAM extraction & Local & 5 & Python & Brandon & Successfully extracts data from BAM files \\ 
-            \hline
-            Visualization & Local & 5 & Python & Tanvir, Kaira & Generates complete graphs \\
-            \hline
-            Data Bases and Requests & Local & 5 & Python & Brandon, Kaira, Tanvir, Jennie & Requesting Data from sources such as Clinvar works \\
-        \end{tabular}
+\begin{tabular}{|p{2.8cm}|p{1cm}|p{1.5cm}|p{2cm}|p{1.8cm}|p{5cm}|}
+\hline
+\textbf{Description} & \textbf{Plat} & \textbf{Comp} & \textbf{Code} & \textbf{Author(s)} & \textbf{Notes} \\ \hline
+ClinVar API Client & Local & 5 & Python & Brandon, Kaira & Entrez API, 200/batch \\ \hline
+Variant Preprocessing & Local & 5 & Python & Brandon, Jenny & Extract chr:start-end, seqs \\ \hline
+Ref Genome Sampler & Local & 5 & Python & Brandon & Match size dist, ratio=0.7 \\ \hline
+Feature Engineering & Local & 5 & Python & Brandon, Jenny & 18 features, no leakage \\ \hline
+Random Forest & Local & 5 & Python & Brandon & 200 trees, balanced \\ \hline
+Gradient Boosting & Local & 5 & Python & Brandon & 200 est, lr=0.05 \\ \hline
+XGBoost & Local & 5 & Python & Brandon & Auto scale\_pos\_weight \\ \hline
+Ensemble Voting & Local & 5 & Python & Brandon & Soft vote, thresh=0.6 \\ \hline
+Cross-Validation & Local & 5 & Python & Brandon, Jenny & Stratified 10-fold \\ \hline
+BAM Deletion Extract & Local & 5 & Python & Brandon & CIGAR parse, MAPQ$\geq$20 \\ \hline
+Gene Annotation & Local & 5 & Python & Brandon, Tanvir & GTF overlap, GENCODE v19 \\ \hline
+Pathogenicity Pred & Local & 5 & Python & Brandon, Jenny & Main inference, JSON out \\ \hline
+Visualization & Local & 5 & Python & Tanvir, Kaira & Conf matrix, ROC, resid \\ \hline
+Training Pipeline & Local & 5 & Python & All & End-to-end auto \\ \hline
+Inference Pipeline & Local & 5 & Python & Brandon, Tanvir & BAM → predictions \\ \hline
+Validation Pipeline & Local & 3 & Python & Brandon & GIAB comparison \\ \hline
+Jupyter Demo & Local & 5 & Python & All & Step-by-step tutorial \\ \hline
+CLI (main.py) & Local & 5 & Python & Brandon & train/infer/validate \\ \hline
+\end{tabular}
 
+\section{External Tools \& Libraries}
 
-    \section{External Tools \& Libraries (1/2 page)} 
-    % guidelines say to include this but can remove if repetitive as we state it above
-        \textbf{TODO}
-        \subsection{Datasets}
-            \begin{itemize}
-                \item ClinVar
-                \item HG002/1000 Genomes Project
-            \end{itemize}
+\textbf{ML Frameworks:} scikit-learn (v1.7.2): RandomForest, GradientBoosting, train\_test\_split, StratifiedKFold, RobustScaler, LabelEncoder, metrics; XGBoost (v2.1.3); pandas (v2.3.3); numpy (v2.3.4)
 
-        \subsection{Frameworks}
-            \begin{itemize}
-                \item Scikit-Learn: Random Forest Classifier, train_test_split, StratifiedKFold, RobustScaler, LabelEncoder, metrics
-                \item Pandas
-                \item numpy
-                \item logging
-                \item pysam
-                \item json
-            \end{itemize}
+\textbf{Genomics:} pysam (v0.23.3): BAM/FASTA parsing, CIGAR analysis; biopython (v1.84): Entrez API
 
-        \subsection{External Open Source}
+\textbf{Visualization:} matplotlib (v3.10.0), seaborn (v0.13.2)
 
-        Double check requirements.
+\textbf{Utilities:} python-dotenv, pathlib, logging
+
+\textbf{Datasets:}
+\begin{itemize}
+    \item ClinVar (NCBI): 11,218 deletions (chr17); Entrez API access
+    \item hs37d5 (1000 Genomes): 3GB FASTA; sequence extraction (we only use a subset of this)
+    \item GENCODE v19: 1GB GTF; gene annotations (GRCh37)
+\end{itemize}
+
+\textbf{Open-Source Code:} None reused. All original implementation. Followed sklearn/pysam documentation for ClinVar batching, reference sampling, CIGAR parsing, feature engineering, ensemble training.
+
+\textbf{Dependencies:} Python 3.9+, 8GB RAM, 5GB storage
+
+\textbf{License:} Educational use (CMPT 310). Authors retain copyright; SFU has academic sharing permission.
     
 \end{document}
