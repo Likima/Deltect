@@ -9,6 +9,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "ipykernel>=7.1.0",
     "matplotlib>=3.10.7",
+    "notebook>=7.5.0",
     "numpy>=2.3.4",
     "pandas>=2.3.3",
     "pysam>=0.23.3",
